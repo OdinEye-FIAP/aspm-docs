@@ -1,8 +1,9 @@
 site_name: ASPM-AI
+site_url: https://odineye-fiap.github.io/aspm-docs/
 site_description: Plataforma ASPM com IA — pipeline GitHub → Kafka → scanners stateless
 site_author: OdinEye-FIAP
-repo_url: https://github.com/OdinEye-FIAP
-repo_name: OdinEye-FIAP
+repo_url: https://github.com/OdinEye-FIAP/aspm-docs
+repo_name: OdinEye-FIAP/aspm-docs
 edit_uri: edit/main/docs/
 
 theme:
@@ -100,6 +101,7 @@ nav:
       - Entendendo o check_run: integration/check-run.md
   - Referência:
       - JobDescriptor v1: reference/job-descriptor.md
+      - Finding v1: reference/finding-v1.md
       - Tópicos Kafka: reference/kafka-topics.md
       - Endpoints HTTP: reference/http-endpoints.md
 

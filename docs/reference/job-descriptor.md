@@ -49,11 +49,13 @@ class JobMetadata(BaseModel):
   "env": {
     "SONAR_HOST_URL": "http://aspm-sonarqube:9000",
     "SONAR_TOKEN": "sqa_xxxxxxxxxxxxxx",
-    "SONAR_PROJECT_KEY": "OdinEye-FIAP_clint-eastwood",
+    "SONAR_PROJECT_KEY": "gh_847291",
+    "SONAR_PROJECT_NAME": "OdinEye-FIAP/clint-eastwood",
     "SONAR_PULLREQUEST_KEY": "5",
     "SONAR_PULLREQUEST_BRANCH": "demo/sonarqube-findings-full",
     "SONAR_PULLREQUEST_BASE": "main",
     "REPO_FULL_NAME": "OdinEye-FIAP/clint-eastwood",
+    "REPO_ID": "847291",
     "HEAD_SHA": "4b743b61fd35f90deb04a673ed03ac0133ec441f"
   },
   "context": {
@@ -140,11 +142,24 @@ Tanto captain-hook quanto moby-dick usam Pydantic. Mensagem inválida:
 - captain-hook publica: Pydantic já validou no momento da construção
 - moby-dick consome: `JobDescriptor(**parsed_json)` valida na deserialização. Mensagem malformada → exception, mensagem **não é commitada** no consumer group, voltará a ser entregue (retry implícito).
 
+## Convenção SONAR_PROJECT_KEY
+
+`SONAR_PROJECT_KEY` é derivado de `github.repository.id` (inteiro estável):
+
+| Env | Valor | Imutável? |
+|---|---|---|
+| `SONAR_PROJECT_KEY` | `gh_<repository.id>` (ex: `gh_847291`) | ✅ sobrevive a rename/transfer |
+| `SONAR_PROJECT_NAME` | `<owner>/<repo>` (ex: `OdinEye-FIAP/clint-eastwood`) | ❌ atualiza a cada scan p/ refletir nome atual |
+| `REPO_FULL_NAME` | igual a `SONAR_PROJECT_NAME` | ❌ |
+| `REPO_ID` | `<repository.id>` cru (ex: `847291`) | ✅ usado como key do `findings.raw` no formato `gh_<id>` |
+
+Ver [Decisão §13](../overview/decisions.md#13-sonar_project_key-derivado-de-githubrepositoryid).
+
 ## Coisas que NÃO estão no JobDescriptor
 
 - ❌ `GIT_TOKEN` — injetado pelo moby-dick em runtime
 - ❌ webhook payload completo — publicado separado em `github.events.raw`
-- ❌ resultado do scan — feedback vai via `check_run`, não Kafka (hoje)
+- ❌ resultado do scan — feedback vai via `check_run` no PR + `findings.raw` no Kafka (consumido pelo pequod)
 
 ## Considerações pra V2
 

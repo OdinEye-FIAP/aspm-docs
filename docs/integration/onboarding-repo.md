@@ -18,12 +18,19 @@ A partir desse momento, qualquer push em PR dispara um webhook pro captain-hook.
 
 ## Passo 2 — Criar projeto no SonarQube
 
-A `project key` precisa bater **exatamente** com `<owner>_<repo>` enviada pelo captain-hook.
+A `project key` precisa bater **exatamente** com `gh_<repository.id>` enviada pelo captain-hook.
+
+**Como descobrir o `repository.id` do GitHub:**
+
+```bash
+gh api /repos/<owner>/<repo> --jq '.id'
+# ex: 847291
+```
 
 === "Via UI"
     1. http://localhost:9000 → **Projects → Create Project → Manually**
-    2. **Display name:** nome amigável (ex: `meu-servico`)
-    3. **Project Key:** `<owner>_<repo>` (ex: `OdinEye-FIAP_meu-servico`)
+    2. **Display name:** `<owner>/<repo>` (ex: `OdinEye-FIAP/meu-servico`)
+    3. **Project Key:** `gh_<repository.id>` (ex: `gh_847291`)
     4. **Main branch:** `main` (ou nome real da branch principal do repo)
     5. **Set Up → Locally** — não precisa configurar CI integration
 
@@ -31,14 +38,22 @@ A `project key` precisa bater **exatamente** com `<owner>_<repo>` enviada pelo c
     ```bash
     OWNER='OdinEye-FIAP'
     REPO='meu-servico'
+    REPO_ID=$(gh api /repos/${OWNER}/${REPO} --jq '.id')
 
     curl -u admin:<sua_senha> -X POST \
       http://localhost:9000/api/projects/create \
-      -d "name=${REPO}&project=${OWNER}_${REPO}"
+      -d "name=${OWNER}/${REPO}&project=gh_${REPO_ID}"
     ```
 
-!!! tip "Project key padrão"
-    Atualmente o captain-hook gera `SONAR_PROJECT_KEY` como `<owner>_<repo>`. Se quiser convenção diferente (ex: incluir `-svc`), precisa mexer no `_maybe_build_job` do captain-hook.
+!!! tip "Por que `gh_<repository.id>`?"
+    `repository.id` é imutável no GitHub — sobrevive a rename, transfer entre orgs, fork. Garante sanitização (sem caracteres especiais) e dedup estável no pequod via `repo_id`. Detalhes em [Decisão §13](../overview/decisions.md#13-sonar_project_key-derivado-de-githubrepositoryid).
+
+!!! warning "Repos já onboardados com `<owner>_<repo>`"
+    Se o projeto Sonar foi criado antes da decisão §13, renomear via:
+    ```bash
+    curl -u admin:<senha> -X POST http://localhost:9000/api/projects/update_key \
+      -d "from=OdinEye-FIAP_meu-servico&to=gh_${REPO_ID}"
+    ```
 
 ## Passo 3 — Validar webhook chegando
 
@@ -76,7 +91,28 @@ INFO - Processando job_id=<uuid> kind=sonar_scan
 INFO - Image aspm-sonar-runner:latest já existe local — skip pull
 INFO - Running container moby-job-... image=aspm-sonar-runner:latest
 INFO - Container moby-job-... finalizado exit_code=<0 ou 1>
+INFO - Sonar API: N issues coletadas project=gh_<id>
+INFO - Findings publicados job_id=<uuid> results=<N>
 INFO - Check run atualizado: <id> - success/failure
+```
+
+## Passo 4b — Validar findings persistidos no pequod
+
+```bash
+sudo journalctl -u pequod -f
+```
+
+Deve aparecer:
+```
+INFO - Ingest job_id=<uuid> repo=<owner>/<repo> scanner=sonarqube
+INFO - Upsert findings: inseridos=<N> atualizados=<M>
+INFO - Findings ingeridos job_id=<uuid>
+```
+
+Verificar via REST:
+
+```bash
+curl 'http://localhost:7070/findings?repo=<owner>/<repo>&limit=5' | jq
 ```
 
 ## Passo 5 — Validar check_run no PR

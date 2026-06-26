@@ -42,20 +42,23 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 
 ---
 
-## 4. Ignorar reports/storage central por enquanto
+## 4. Storage central de findings (revisto: agora ativo via pequod)
 
-**Decisão:** não construir storage central de findings. Sonar guarda no `sonar-db` dele, ficamos satisfeitos com o `check_run` no PR.
+**Decisão original:** não construir storage central de findings; usar só `check_run` do PR como feedback.
 
-**Por quê:**
-- Valida pipeline end-to-end com custo mínimo
-- Evita decisões prematuras sobre schema, dedup, banco, IA
-- Quando aparecer 2º scanner, decisões serão informadas por uso real
+**Revisão (2026-06-23):** com pipeline E2E validado, criamos o [`pequod`](https://github.com/OdinEye-FIAP/pequod) — consumer de `findings.raw`, normaliza SARIF em `Finding v1`, dedupa por fingerprint SHA-256, expõe REST.
 
-**Adiados conscientemente:**
-- `findings-ingestor` / schema `finding_v1`
-- DefectDojo ou agregador equivalente
-- Enriquecimento por IA
-- Correlação cross-scanner
+**Por que mudou:**
+- Pipeline end-to-end já validado (check_run funcionando)
+- Validar suposições de schema unificado antes do 2º scanner chegar é mais barato do que esperar
+- Triagem manual no Sonar UI não escala — `PATCH /findings/{id}` permite workflow de aprovação fora do Sonar
+- Base preparada pra camada de IA (pgvector, ai_triage) sem mexer no orquestrador
+
+**Ainda adiados conscientemente:**
+- DefectDojo ou agregador equivalente (pequod já cobre)
+- Enriquecimento por IA (próxima fase)
+- Correlação cross-scanner (precisa 2º scanner)
+- UI Web de triagem (só REST por enquanto)
 
 ---
 
@@ -144,6 +147,59 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 - Independente dos serviços (não acopla doc a release de código)
 
 **Trade-off:** repo a mais pra cuidar. README curto por serviço aponta pra este site.
+
+---
+
+## 11. Extração de findings via Sonar API no moby-dick (síncrono)
+
+**Decisão:** moby-dick chama `GET /api/issues/search` da Sonar API **após** `container.wait()` do scanner, converte resposta → SARIF, publica `findings.raw`, **depois** patcha `check_run`. Tudo no path crítico de `process_job`.
+
+**Por quê:**
+- Mantém o scanner dumb (`sonar-runner` só roda `sonar-scanner`; não conhece Sonar API). Decisão §5 preservada.
+- Sync garante ordem: pequod tem finding antes do dev ver check verde no PR.
+- Falha de extração/publish → job inteiro falha → check_run vermelho → visível, fix rápido (sem perda silenciosa).
+- Latência extra estimada 1-3s. Aceitável pro check_run que já leva minutos no scan.
+
+**Trade-off aceito:**
+- Sonar API lenta ou Kafka down trava o check_run também. Mitigação: timeout curto na call Sonar + retry idempotente do consumer.
+- Acopla "feedback ao dev" com "persistência interna". Aceitável no MVP.
+
+**Localização:** `moby-dick/adapter/sonar/issues_to_sarif.py`. Controller orquestra; adapter só traduz.
+
+**Quando revisitar:** latência do check_run virar reclamação real do dev OU Sonar API ficar instável. Refactor pra `asyncio.create_task` é trivial.
+
+---
+
+## 12. SARIF como formato comum de finding no pipeline
+
+**Decisão:** todo finding que entra em `findings.raw` é normalizado em SARIF v2.1.0 (OASIS) antes de publicar no Kafka. Pequod consome SARIF e converte pra `Finding v1`.
+
+**Por quê:**
+- Padrão de mercado — GitHub Code Scanning, Microsoft, Semgrep, CodeQL, Trivy emitem SARIF nativo.
+- Scanner-agnostic — adicionar 2º/3º scanner (Semgrep, Trivy) não muda contrato de `findings.raw` nem código do pequod.
+- Spec estável, JSON, bem documentado.
+
+**Trade-off aceito:**
+- SonarQube **não emite SARIF nativo** — precisa adapter (§11) que converte `/api/issues/search` → shape SARIF.
+
+**Alternativas descartadas:**
+- Shape próprio "finding_raw_v1" — perde interoperabilidade com tooling existente.
+- Passar resposta Sonar crua adiante — acopla pequod ao formato Sonar; quebra com Semgrep depois.
+
+---
+
+## 13. `SONAR_PROJECT_KEY` derivado de `github.repository.id`
+
+**Decisão:** captain-hook usa `f"gh_{repository.id}"` como `SONAR_PROJECT_KEY` (inteiro estável vindo do payload do webhook), não mais `f"{owner}_{repo}"`.
+
+**Por quê:**
+- `repository.id` é imutável — sobrevive a rename, transfer entre orgs.
+- Sanitização garantida — `gh_<int>` sempre bate na regex `[a-zA-Z0-9:\-_.]+` que Sonar exige.
+- Pequod ganha `repo_id` como chave estável de dedup.
+
+**Trade-off aceito:**
+- `gh_847291` não é legível no Sonar UI. Mitigação: `sonar.projectName="OdinEye-FIAP/clint-eastwood"` (label humano, key estável).
+- Migração de repos já onboardados: precisa renomear projeto no Sonar via `/api/projects/update_key`.
 
 ---
 
