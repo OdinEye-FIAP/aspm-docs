@@ -82,6 +82,91 @@ moby-dick **não** expõe endpoint de scan (não há "POST /scan"). Toda ativida
 
 http://localhost:9090/docs — só `/health` por enquanto. Endpoints HTTP adicionais virão se decidirmos expor API de listagem de jobs em execução.
 
+## pequod (porta 7070)
+
+### `GET /health`
+
+**Função:** liveness + readiness (checa DB).
+
+**Response:**
+
+```json
+{"status": "ok", "db": "ok"}
+```
+
+### `GET /findings`
+
+**Função:** listar findings paginados com filtros.
+
+**Query params:**
+
+| Param | Tipo | Default | Uso |
+|---|---|---|---|
+| `repo` | str | — | filtra por repo (ex: `OdinEye-FIAP/clint-eastwood`) |
+| `severity` | str | — | `critical`, `major`, `minor`, `info` |
+| `status` | str | — | `open`, `triaged`, `resolved`, `false_positive` |
+| `limit` | int | 50 | máximo de resultados |
+| `offset` | int | 0 | offset pra paginação |
+
+**Response:**
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "fingerprint": "sha256...",
+      "scanner": "sonarqube",
+      "rule_id": "javascript:S2068",
+      "severity": "critical",
+      "repo": "OdinEye-FIAP/clint-eastwood",
+      "ref": "4b743b61...",
+      "file_path": "security-issues.js",
+      "line_start": 12,
+      "line_end": 12,
+      "message": "Hardcoded credentials detected",
+      "status": "open",
+      "first_seen_at": "2026-06-23T14:30:00Z",
+      "last_seen_at": "2026-06-25T09:12:00Z"
+    }
+  ],
+  "total": 42
+}
+```
+
+### `GET /findings/{finding_id}`
+
+**Função:** detalhe de um finding (inclui `sarif_raw`).
+
+**Response:** mesmo schema do item de `/findings` + campo `sarif_raw` (JSON do SARIF result original).
+
+| Status | Quando |
+|---|---|
+| `200 OK` | finding encontrado |
+| `404 Not Found` | id inexistente |
+
+### `PATCH /findings/{finding_id}`
+
+**Função:** atualizar `status` (triage manual).
+
+**Body:**
+
+```json
+{ "status": "false_positive" }
+```
+
+`status` válidos: `open`, `triaged`, `resolved`, `false_positive`.
+
+**Response:** finding atualizado (mesmo schema do GET).
+
+### Background consumer
+
+pequod **não** expõe endpoint de ingestão. Toda ingestão vem de `findings.raw` no Kafka.
+
+### Swagger UI
+
+http://localhost:7070/docs — FastAPI auto-gera todos os endpoints com schemas Pydantic (`Finding v1`, `FindingsRawEvent`).
+
 ## SonarQube (porta 9000) — referência externa
 
 Não fazemos chamadas custom — usamos só sonar-scanner CLI. Mas vale documentar endpoints úteis pra bootstrap e debug.
@@ -221,16 +306,14 @@ docker exec aspm-redpanda rpk group describe moby-dick
 
 ## Endpoints futuros previstos
 
-### findings-api (futuro)
+### pequod — evoluções planejadas
 
 | Endpoint | Função |
 |---|---|
-| `GET /findings` | listar findings com filtros |
-| `GET /findings/{id}` | detalhe |
-| `PATCH /findings/{id}` | triagem (false positive, accepted, fixed) |
-| `GET /findings/{id}/sarif` | SARIF cru |
-| `GET /repos/{repo}/summary` | métricas agregadas |
-| `POST /findings/import` | importar SARIF manualmente |
+| `GET /findings/{id}/sarif` | SARIF cru extraído do `sarif_raw` |
+| `GET /repos/{repo}/summary` | métricas agregadas (contagem por severity/status) |
+| `POST /findings/import` | importar SARIF manualmente (re-ingest de scan antigo) |
+| `GET /findings/{id}/history` | histórico de mudanças de status |
 
 ### policy-engine (futuro)
 
@@ -238,5 +321,12 @@ docker exec aspm-redpanda rpk group describe moby-dick
 |---|---|
 | `GET /policies` | listar políticas ativas |
 | `POST /policies/evaluate` | testar uma policy contra um job hipotético |
+
+### ai-triage (futuro)
+
+| Endpoint | Função |
+|---|---|
+| `POST /enrich/{finding_id}` | dispara classificação LLM e anexa ao finding |
+| `GET /enrichments/{finding_id}` | recupera enrichments do finding |
 
 Quando esses serviços nascerem, esta página será atualizada.

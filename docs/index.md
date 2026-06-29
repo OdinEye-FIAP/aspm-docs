@@ -9,8 +9,9 @@ Quando um PR é aberto/atualizado num repo onboardado, a plataforma:
 1. Recebe o webhook do GitHub
 2. Despacha um scanner em container isolado
 3. Roda análise (atualmente SonarQube; mais scanners e enriquecimento por IA virão)
-4. Reporta o resultado como **check_run** no PR
-5. Bloqueia ou libera merge conforme Quality Gate
+4. Extrai findings, normaliza em SARIF v2.1.0 e persiste no `pequod`
+5. Reporta o resultado como **check_run** no PR
+6. Bloqueia ou libera merge conforme Quality Gate
 
 ```mermaid
 flowchart LR
@@ -18,18 +19,23 @@ flowchart LR
     GH[GitHub PR]
     CH[captain-hook]
     K[(Kafka)]
-    MD[moby-dick]
-    SR[scanner container]
+    MD[moby-dick<br/>orquestra Docker]
+    SR[scanner container<br/>self-contained:<br/>scan + emite SARIF]
     SQ[SonarQube]
+    PQ[pequod<br/>storage canônico]
+    PG[(postgres)]
 
     Dev -->|push| GH
     GH -->|webhook| CH
-    CH -->|publish job| K
+    CH -->|jobs.orchestration| K
     K -->|consume| MD
     MD -->|spawn| SR
-    SR -->|scan| SQ
-    SQ -->|QG result| SR
-    SR -->|exit code| MD
+    SR -->|sonar-scanner| SQ
+    SQ -->|QG + issues| SR
+    SR -->|SARIF em /tmp/scan.sarif.json| MD
+    MD -->|findings.raw SARIF| K
+    K -->|consume| PQ
+    PQ -->|upsert| PG
     MD -->|check_run| GH
     GH -->|status| Dev
 ```
@@ -61,7 +67,9 @@ flowchart LR
 | Orchestration | FastAPI (`moby-dick`) + Docker SDK |
 | Scanner | SonarQube Community Build (image wrapper `aspm-sonar-runner`) |
 | Auth GitHub | GitHub App + installation token |
+| Normalização SARIF | adapter em `moby-dick` (Sonar API → SARIF v2.1.0) |
 | Persistência scanner | postgres (`sonar-db`) |
+| Persistência findings normalizados | FastAPI (`pequod`) + postgres + asyncpg |
 | Deploy | docker-compose + systemd na VPS |
 
 ## Estado
@@ -70,8 +78,11 @@ flowchart LR
 |---|---|
 | Pipeline GitHub → check_run | ✅ funcionando end-to-end |
 | Scanner SonarQube | ✅ funcionando |
-| Storage central de findings | ⏳ adiado (ver [Decisões](overview/decisions.md)) |
-| Correlação cross-scanner | ⏳ adiado |
+| Extração SARIF cross-scanner | 🚧 hoje em `moby-dick/adapter/sonar`; migrando para dentro da scanner image ([§11](overview/decisions.md#11-extração-de-findings-dentro-da-scanner-image-target-arquitetural)) |
+| Storage central de findings | ✅ `pequod` consume `findings.raw`, normaliza e dedupa por fingerprint |
+| REST de findings (UI/IA) | ✅ `GET/PATCH /findings` em `pequod` |
+| Pequod como source-of-truth (substitui papel do `sonar-db`) | 🎯 intenção declarada ([§14](overview/decisions.md#14-pequod-como-source-of-truth-de-findings-substitui-sonar-db-a-longo-prazo)) |
+| Correlação cross-scanner | ⏳ adiado (precisa 2º scanner) |
 | Enriquecimento IA | ⏳ adiado |
 
-Estamos na **fase 0 → 1** do roadmap. Foco em validar pipeline antes de escalar features.
+Estamos na **fase 1** do roadmap: pipeline E2E vivo, findings persistidos. Próximos passos: (i) migrar extração SARIF pra dentro do scanner image, (ii) adicionar 2º scanner, (iii) camada de IA sobre `pequod`.

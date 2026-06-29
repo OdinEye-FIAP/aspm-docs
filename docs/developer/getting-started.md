@@ -18,6 +18,7 @@ Guia pra rodar o pipeline ASPM-AI em ambiente local ou na VPS.
 mkdir -p ~/dev/aspm-ai && cd ~/dev/aspm-ai
 git clone git@github.com:OdinEye-FIAP/captain-hook.git
 git clone git@github.com:OdinEye-FIAP/moby-dick.git
+git clone git@github.com:OdinEye-FIAP/pequod.git
 git clone git@github.com:OdinEye-FIAP/aspm-docs.git   # opcional, esta doc
 ```
 
@@ -107,11 +108,39 @@ GITHUB_INSTALLATION_ID=<seu installation id>
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 KAFKA_CONSUMER_GROUP=moby-dick
 TOPIC_JOBS_ORCHESTRATION=jobs.orchestration
+TOPIC_FINDINGS_RAW=findings.raw
+SONAR_HOST_URL=http://aspm-sonarqube:9000
+SONAR_TOKEN=<token gerado no passo 2>
+SONAR_API_TIMEOUT_SECONDS=30
 DOCKER_RUN_TIMEOUT_SECONDS=600
 DOCKER_NETWORK=aspm-net
 ```
 
 Coloque a private key da GitHub App em `./config/github-app-private-key.pem`.
+
+## 4b. Subir o postgres do pequod + configurar `.env`
+
+```bash
+cd ../pequod
+docker compose up -d            # sobe aspm-pequod-db na rede aspm-net
+cp .env.example .env
+```
+
+Edite:
+
+```env
+APP_HOST=0.0.0.0
+APP_PORT=7070
+APP_ENV=local
+LOG_LEVEL=INFO
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_CONSUMER_GROUP=pequod
+TOPIC_FINDINGS_RAW=findings.raw
+DATABASE_URL=postgresql://pequod:pequod@localhost:5433/pequod
+```
+
+!!! tip "Migrations automáticas"
+    O `docker-compose.yml` do pequod monta `deploy/migrations/` em `/docker-entrypoint-initdb.d` — postgres aplica `001_init.sql` no primeiro boot. Não precisa rodar manual.
 
 ## 5. Buildar a imagem do scanner
 
@@ -142,6 +171,11 @@ pip install -r requirements.txt
 cd ../moby-dick
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+
+# pequod
+cd ../pequod
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## 7. Subir os serviços
@@ -160,16 +194,23 @@ pip install -r requirements.txt
     uvicorn main:app --host 0.0.0.0 --port 9090 --reload
     ```
 
+    Terminal 3:
+    ```bash
+    cd pequod && source venv/bin/activate
+    uvicorn main:app --host 0.0.0.0 --port 7070 --reload
+    ```
+
 === "VPS (systemd)"
 
     Cada repo tem `deploy/<service>.service`.
 
     ```bash
-    sudo cp deploy/captain-hook.service /etc/systemd/system/
-    sudo cp deploy/moby-dick.service /etc/systemd/system/
+    sudo cp captain-hook/deploy/captain-hook.service /etc/systemd/system/
+    sudo cp moby-dick/deploy/moby-dick.service /etc/systemd/system/
+    sudo cp pequod/deploy/pequod.service /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable --now captain-hook moby-dick
-    sudo systemctl status captain-hook moby-dick
+    sudo systemctl enable --now captain-hook moby-dick pequod
+    sudo systemctl status captain-hook moby-dick pequod
     ```
 
 ## 8. Expor captain-hook ao GitHub
@@ -205,20 +246,30 @@ GitHub precisa alcançar o endpoint via internet.
    ```bash
    docker ps --filter "name=moby-job-"
    ```
-5. Veja check_run no PR (aba **Checks** do PR)
-6. Veja análise no Sonar UI: http://localhost:9000
+5. Veja pequod ingerir o finding:
+   ```bash
+   sudo journalctl -u pequod -f
+   ```
+6. Veja check_run no PR (aba **Checks** do PR)
+7. Veja análise no Sonar UI: http://localhost:9000
+8. Veja findings persistidos:
+   ```bash
+   curl 'http://localhost:7070/findings?repo=OdinEye-FIAP/clint-eastwood&limit=5' | jq
+   ```
 
 ## Layout final
 
 ```
 ~/dev/aspm-ai/
 ├── captain-hook/          # FastAPI + Kafka producer
-├── moby-dick/             # FastAPI + Kafka consumer + Docker
+├── moby-dick/             # FastAPI + Kafka consumer + Docker + SARIF publisher
+├── pequod/                # FastAPI + Kafka consumer + asyncpg + REST findings
 ├── aspm-docs/             # esta doc
 └── (containers)
     ├── aspm-redpanda
     ├── aspm-sonarqube
     ├── aspm-sonar-db
+    ├── aspm-pequod-db
     └── moby-job-*         # efêmeros
 ```
 

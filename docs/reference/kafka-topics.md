@@ -54,29 +54,43 @@ Stack atual: **Redpanda** (Kafka-compatible), single-node, sem replicação. Rod
 
 **Retenção:** default (7 dias). Mensagens já consumidas não precisam ser revisitadas — moby-dick commit do offset.
 
+### `findings.raw`
+
+**Producer:** moby-dick (após scan: extrai issues da Sonar API → converte SARIF v2.1.0)
+**Consumer:** pequod (consumer group `pequod`)
+**Key:** `repo_id` (= `gh_<github_repository_id>`)
+
+**Value schema:** [`Finding v1`](finding-v1.md).
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "repo": "OdinEye-FIAP/clint-eastwood",
+  "repo_id": "gh_847291",
+  "scanner": "sonarqube",
+  "ref": "4b743b61fd35f90deb04a673ed03ac0133ec441f",
+  "sarif": { "$schema": "...", "version": "2.1.0", "runs": [ ... ] }
+}
+```
+
+**Propósito:** evento de findings recém-extraídos, em formato scanner-agnóstico (SARIF). Pequod normaliza em `Finding v1`, dedupa por fingerprint e persiste.
+
+**Particionamento:** key = `repo_id` (imutável a rename/transfer no GitHub).
+
+**Retenção:** default (7 dias). Reprocessar implica re-upsert no pequod (idempotente via fingerprint).
+
 ## Tópicos futuros previstos
 
 Nenhum criado ainda. Listados aqui pra alinhar nomenclatura quando virarem reais.
 
-### `findings.raw`
-
-**Quando entrar:** ao adicionar findings-ingestor (fase 1 do roadmap).
-
-**Producer:** moby-dick (ou scanner via callback HTTP intermediário)
-**Consumer:** findings-ingestor
-
-**Value:** SARIF v2.1.0 cru, gerado pelo scanner.
-
-**Propósito:** centralizar SARIF de todos os scanners antes da normalização.
-
 ### `findings.created`, `findings.updated`, `findings.resolved`
 
-**Producer:** findings-ingestor (após normalizar e dedupar)
+**Producer:** pequod (após dedup/upsert)
 **Consumer:** N (notifier, ai-triage, risk-engine, etc)
 
-**Value:** schema `Finding v1` (a ser definido).
+**Value:** schema `Finding v1` + diff de estado.
 
-**Propósito:** event bus de findings. Cada serviço novo é um consumer independente.
+**Propósito:** event bus de findings normalizados. Cada serviço novo é um consumer independente, sem acoplamento ao pequod.
 
 ### `ai.enrichments.triage`, `ai.enrichments.reachability`
 
@@ -110,6 +124,7 @@ Nenhum criado ainda. Listados aqui pra alinhar nomenclatura quando virarem reais
 |---|---|---|
 | `github.events.raw` | `repo_full_name` | balancear por repo |
 | `jobs.orchestration` | `repo_full_name` | ordem por repo (Sonar Community sobrescreve) |
+| `findings.raw` | `repo_id` (`gh_<id>`) | ordem por repo, key estável a rename |
 | `findings.created` (futuro) | `finding_fingerprint` | dedup por hash |
 
 ## Replay / reprocessamento
@@ -135,6 +150,7 @@ docker exec aspm-redpanda rpk group seek moby-dick --to end
 Lag por consumer group:
 ```bash
 docker exec aspm-redpanda rpk group describe moby-dick
+docker exec aspm-redpanda rpk group describe pequod
 ```
 
 Métricas do broker:

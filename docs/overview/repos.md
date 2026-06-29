@@ -5,7 +5,8 @@
 | Repo | Função | Stack | Estado |
 |---|---|---|---|
 | [`captain-hook`](https://github.com/OdinEye-FIAP/captain-hook) | Ingest de webhook GitHub → publica jobs no Kafka | FastAPI + aiokafka | ✅ ativo |
-| [`moby-dick`](https://github.com/OdinEye-FIAP/moby-dick) | Consumer Kafka → spawna container scanner → reporta check_run | FastAPI + Docker SDK + PyJWT | ✅ ativo |
+| [`moby-dick`](https://github.com/OdinEye-FIAP/moby-dick) | Consumer Kafka → spawna container scanner → extrai arquivo SARIF do container → publica `findings.raw` → reporta check_run | FastAPI + Docker SDK + PyJWT | ✅ ativo |
+| [`pequod`](https://github.com/OdinEye-FIAP/pequod) | Consumer `findings.raw` → normaliza SARIF → upsert por fingerprint → REST | FastAPI + aiokafka + asyncpg | ✅ ativo |
 | [`clint-eastwood`](https://github.com/OdinEye-FIAP/clint-eastwood) | Repo de teste/demo com código intencionalmente vulnerável | JS | 🧪 demo |
 | [`aspm-docs`](https://github.com/OdinEye-FIAP/aspm-docs) | Esta documentação | MkDocs Material | 📚 doc |
 
@@ -42,7 +43,7 @@ DEFAULT_JOB_IMAGE=aspm-sonar-runner:latest
 
 ## moby-dick
 
-**Papel:** orquestrador da execução.
+**Papel:** orquestrador de Docker. Nada além disso.
 
 **Responsabilidades:**
 
@@ -52,13 +53,19 @@ DEFAULT_JOB_IMAGE=aspm-sonar-runner:latest
 - Mesclar `GIT_TOKEN` no env do container
 - Rodar container Docker da image especificada no `JobDescriptor`
 - Coletar exit code + logs
+- Extrair `/tmp/scan.sarif.json` do container via `container.get_archive()` (formato neutro, scanner-agnóstico)
+- Publicar SARIF em `findings.raw`
 - Atualizar `check_run` com `conclusion=success/failure`
 
 **O que NÃO faz:**
 
-- Não conhece SonarQube especificamente
-- Não conhece o conteúdo do scan
-- Não persiste findings
+- Não conhece nenhum scanner específico (Sonar, Semgrep, Trivy)
+- Não chama API de scanner — toda conversa scanner-específica vive **dentro da image** do scanner
+- Não persiste findings (delega ao `pequod`)
+- Não normaliza SARIF em entidade de domínio (delega ao `pequod`)
+
+!!! info "Estado transitório (Decisão §11)"
+    Hoje `moby-dick/adapter/sonar/issues_to_sarif.py` ainda chama a Sonar API diretamente. A migração pra dentro do `sonar-runner` (entrypoint emite `/tmp/scan.sarif.json`) está planejada — após ela, moby-dick fica realmente Docker-only.
 
 **Entry:** `main.py` → FastAPI + background consumer loop.
 
@@ -71,15 +78,59 @@ GITHUB_INSTALLATION_ID=...
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 DOCKER_NETWORK=aspm-net
 DOCKER_RUN_TIMEOUT_SECONDS=600
+TOPIC_FINDINGS_RAW=findings.raw
+# SARIF dentro do container (convenção shared com scanner image)
+SARIF_OUTPUT_PATH=/tmp/scan.sarif.json
 ```
 
 **Pastas-chave:**
 
-- `controller/job_controller.py` — fluxo de processamento de job
+- `controller/job_controller.py` — fluxo de processamento de job + publicação de findings
 - `diplomat/http_out/github_client.py` — GitHub App API client
-- `diplomat/runner/docker_runner.py` — Docker SDK wrapper
+- `diplomat/runner/docker_runner.py` — Docker SDK wrapper + extração de arquivo
+- `diplomat/messaging/kafka_consumer.py` — consumer Kafka (`jobs.orchestration`)
+- `diplomat/messaging/kafka_producer.py` — producer Kafka (`findings.raw`)
+- `deploy/sonar-runner/` — Dockerfile + entrypoint do scanner (dono do conhecimento Sonar)
+
+## pequod
+
+**Papel:** camada de persistência de findings normalizados.
+
+**Responsabilidades:**
+
+- Consumir `findings.raw` do Kafka
+- Parsear SARIF v2.1.0 → entidade `Finding`
+- Calcular `fingerprint` SHA-256 determinístico (scanner + rule + repo + file + line + snippet)
+- Upsert idempotente `ON CONFLICT (fingerprint, repo)` — atualiza `last_seen_at` + ref/severity/message
+- Expor REST: `GET /findings` (filtros por repo/severity/status), `GET /findings/{id}`, `PATCH /findings/{id}` (triage)
+
+**O que NÃO faz:**
+
+- Não chama scanners (consumer puro de evento)
+- Não decide policy / quality gate (responsabilidade de moby-dick + Sonar)
+- Não enriquece com IA (fica em serviço separado quando entrar)
+
+**Entry:** `main.py` → FastAPI + lifespan (DB pool + Kafka consumer).
+
+**Settings principais:**
+
+```env
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_CONSUMER_GROUP=pequod
+TOPIC_FINDINGS_RAW=findings.raw
+DATABASE_URL=postgresql://pequod:pequod@localhost:5433/pequod
+```
+
+**Pastas-chave:**
+
+- `controller/ingest_controller.py` — orquestração da ingestão
+- `controller/query_controller.py` — orquestração das queries REST
+- `adapter/sarif/sarif_to_finding.py` — parser SARIF tolerante
+- `model/finding.py` — entidade + `compute_fingerprint`
+- `diplomat/db/finding_repo.py` — SQL puro (asyncpg, sem ORM)
+- `diplomat/db/pool.py` — pool asyncpg
 - `diplomat/messaging/kafka_consumer.py` — consumer Kafka
-- `deploy/sonar-runner/` — Dockerfile + entrypoint do scanner
+- `deploy/migrations/001_init.sql` — schema inicial
 
 ## clint-eastwood
 
@@ -127,10 +178,10 @@ docs/
 
 | Nome candidato | Função | Stack provável |
 |---|---|---|
-| `findings-ingestor` | Consome SARIF/JSON de scans, normaliza, persiste | FastAPI + postgres |
-| `findings-api` | API/GraphQL pra consultar/triagear findings | FastAPI ou Strawberry |
-| `policy-engine` | Decide quais scanners rodar por repo/PR | Python + YAML config |
-| `ai-triage` | Classifica findings via LLM | Python + Anthropic SDK |
-| `correlation-service` | Embeddings + grafo | Python + pgvector |
+| `policy-engine` | Decide quais scanners rodar por repo/PR (`.aspm.yml`) | Python + YAML config |
+| `ai-triage` | Classifica findings via LLM (false-positive, severity ajustada) | Python + Anthropic SDK |
+| `correlation-service` | Embeddings + grafo cross-scanner | Python + pgvector |
+| `findings-ui` | UI Web pra triagem manual | Next.js ou Streamlit |
+| `notifier` | Posta findings críticos em Slack/email | Python |
 
-Nenhum desses existe ainda. Serão criados conforme o roadmap avança.
+Os papéis de `findings-ingestor` e `findings-api` foram absorvidos pelo [`pequod`](https://github.com/OdinEye-FIAP/pequod). Os outros serão criados conforme o roadmap avança.
