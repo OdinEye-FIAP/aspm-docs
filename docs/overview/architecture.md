@@ -59,7 +59,7 @@ sequenceDiagram
     participant MD as moby-dick
     participant GHA as GitHub App API
     participant DR as Docker
-    participant SR as Scanner container
+    participant SR as sonar-runner<br/>(self-contained)
     participant SQ as SonarQube
     participant PQ as pequod
     participant PDB as pequod-db
@@ -72,26 +72,80 @@ sequenceDiagram
     MD->>GHA: get installation_token
     MD->>GHA: create check_run(in_progress)
     MD->>DR: containers.run(image, env)
+
+    rect rgb(255, 244, 230)
+    Note over SR,SQ: scanner image faz TUDO Sonar
     DR->>SR: start
     SR->>GH: git clone via x-access-token
-    SR->>SQ: sonar-scanner (com qualitygate.wait=true)
+    SR->>SQ: sonar-scanner (qualitygate.wait=true)
     SQ-->>SR: QG status OK/ERROR
+    SR->>SQ: GET /api/issues/search?componentKeys=gh_<repo_id>
+    SQ-->>SR: issues JSON
+    SR->>SR: converte → /tmp/scan.sarif.json
     SR-->>DR: exit code 0/!=0
-    DR-->>MD: RunResult
-    MD->>SQ: GET /api/issues/search?componentKeys=gh_<repo_id>
-    SQ-->>MD: issues JSON
-    MD->>MD: convert → SARIF v2.1.0
-    MD->>K: publish findings.raw
+    end
+
+    rect rgb(219, 234, 254)
+    Note over MD: moby-dick só Docker
+    MD->>DR: get_archive("/tmp/scan.sarif.json")
+    DR-->>MD: tar com SARIF
+    MD->>MD: extrai SARIF do tar
+    MD->>K: publish findings.raw {sarif}
+    end
+
+    rect rgb(220, 252, 231)
+    Note over PQ,PDB: pequod só storage
     K->>PQ: consume findings.raw
     PQ->>PQ: parse SARIF → Finding v1 + fingerprint
-    PQ->>PDB: upsert ON CONFLICT (fingerprint, repo)
+    PQ->>PDB: upsert ON CONFLICT (fingerprint, repo_id)
+    end
+
     MD->>GHA: update check_run(success/failure)
     GHA-->>GH: status no PR
     GH-->>Dev: check verde/vermelho
 ```
 
-!!! info "Extração de findings síncrona"
-    A chamada `GET /api/issues/search` + publicação em `findings.raw` acontece **antes** do `update check_run`. Isso garante ordem (pequod sempre tem o finding antes do dev ver o check), ao custo de ~1-3s de latência. Ver [Decisão §11](decisions.md#11-extração-de-findings-via-sonar-api-no-moby-dick-síncrono).
+!!! warning "Estado atual vs. alvo"
+    O diagrama acima representa o **alvo arquitetural (B)**. Hoje a extração de findings (`GET /api/issues/search` + conversão SARIF) ainda vive em `moby-dick/adapter/sonar/issues_to_sarif.py`. A migração pra dentro do `sonar-runner` está rastreada na [Decisão §11](decisions.md#11-extração-de-findings-dentro-da-scanner-image-target-arquitetural).
+
+## Direção arquitetural — responsabilidade por camada
+
+Para preservar `moby-dick` como orquestrador puro de Docker e `pequod` como camada de storage, todo conhecimento scanner-específico fica encapsulado **dentro da própria image do scanner**.
+
+| Componente | Conhece | NÃO conhece |
+|---|---|---|
+| `sonar-runner` (image) | Sonar API, formato Sonar, SARIF, `sonar-scanner` CLI | Kafka, Postgres, GitHub App, REST do pequod |
+| `moby-dick` | Docker SDK, Kafka producer, GitHub App, contrato `JobDescriptor` | qualquer scanner específico, formato de finding, parser SARIF |
+| `pequod` | SARIF v2.1.0, Postgres, REST, contrato `Finding v1` | Docker, GitHub, qualquer scanner |
+
+**Consequência:** adicionar Semgrep ao pipeline = construir `aspm-semgrep-runner` que já emite SARIF (Semgrep tem `--sarif` nativo). Zero código novo em `moby-dick` ou `pequod`. Captain-hook ganha `kind=semgrep_scan` e troca `default_job_image`.
+
+## Topologia de fluxo (resumo conceitual)
+
+```mermaid
+flowchart LR
+    subgraph S1[" sonar-runner (image) "]
+        E1[entrypoint.sh:<br/>1. git clone<br/>2. sonar-scanner<br/>3. GET /api/issues/search<br/>4. converte SARIF<br/>5. escreve /tmp/scan.sarif.json]
+    end
+
+    subgraph S2[" moby-dick "]
+        E2[1. consome jobs.orchestration<br/>2. roda container<br/>3. extrai arquivo SARIF<br/>4. publica findings.raw<br/>5. patch check_run]
+    end
+
+    subgraph S3[" pequod "]
+        E3[1. consome findings.raw<br/>2. parse SARIF<br/>3. upsert no postgres<br/>4. serve REST]
+    end
+
+    S1 -.SARIF.- S2
+    S2 -.SARIF.- S3
+
+    classDef sonar fill:#fff4e6,stroke:#f59e0b
+    classDef docker fill:#dbeafe,stroke:#1e40af
+    classDef store fill:#dcfce7,stroke:#15803d
+    class S1 sonar
+    class S2 docker
+    class S3 store
+```
 
 ## Princípios arquiteturais
 
@@ -163,6 +217,8 @@ Apps Python rodam **fora** do compose — direto na VPS via systemd. Compose cui
 
 - ✅ **Findings store central** — agora vive no `pequod` (mas ainda sem UI; consulta via REST)
 - ✅ **Schema unificado de findings** — `Finding v1` com fingerprint determinístico (SHA-256)
+- 🎯 **Pequod como source-of-truth de findings** — intenção declarada ([Decisão §14](decisions.md#14-pequod-como-source-of-truth-de-findings-substitui-sonar-db-a-longo-prazo)). `sonar-db` continua existindo (Sonar exige), mas vira scratch interno; toda integração nova consulta o pequod.
+- 🚧 **Extração SARIF dentro da scanner image** — em migração ([§11](decisions.md#11-extração-de-findings-dentro-da-scanner-image-target-arquitetural)). Após isso, moby-dick fica Docker-only de verdade.
 - ❌ **UI de triagem** — só `PATCH /findings/{id}` por enquanto; UI Web fica pra próxima fase
 - ❌ **Correlação cross-scanner** — só faz sentido quando 2º scanner entrar
 - ❌ **Enriquecimento IA** — fase posterior do roadmap (pgvector + LLM triage sobre `pequod`)

@@ -19,10 +19,10 @@ flowchart LR
     GH[GitHub PR]
     CH[captain-hook]
     K[(Kafka)]
-    MD[moby-dick]
-    SR[scanner container]
+    MD[moby-dick<br/>orquestra Docker]
+    SR[scanner container<br/>self-contained:<br/>scan + emite SARIF]
     SQ[SonarQube]
-    PQ[pequod]
+    PQ[pequod<br/>storage canônico]
     PG[(postgres)]
 
     Dev -->|push| GH
@@ -30,9 +30,9 @@ flowchart LR
     CH -->|jobs.orchestration| K
     K -->|consume| MD
     MD -->|spawn| SR
-    SR -->|scan| SQ
-    SQ -->|QG result| SR
-    SR -->|exit code| MD
+    SR -->|sonar-scanner| SQ
+    SQ -->|QG + issues| SR
+    SR -->|SARIF em /tmp/scan.sarif.json| MD
     MD -->|findings.raw SARIF| K
     K -->|consume| PQ
     PQ -->|upsert| PG
@@ -78,10 +78,11 @@ flowchart LR
 |---|---|
 | Pipeline GitHub → check_run | ✅ funcionando end-to-end |
 | Scanner SonarQube | ✅ funcionando |
-| Extração SARIF cross-scanner | ✅ Sonar API → SARIF v2.1.0 em `moby-dick/adapter/sonar` |
+| Extração SARIF cross-scanner | 🚧 hoje em `moby-dick/adapter/sonar`; migrando para dentro da scanner image ([§11](overview/decisions.md#11-extração-de-findings-dentro-da-scanner-image-target-arquitetural)) |
 | Storage central de findings | ✅ `pequod` consume `findings.raw`, normaliza e dedupa por fingerprint |
 | REST de findings (UI/IA) | ✅ `GET/PATCH /findings` em `pequod` |
+| Pequod como source-of-truth (substitui papel do `sonar-db`) | 🎯 intenção declarada ([§14](overview/decisions.md#14-pequod-como-source-of-truth-de-findings-substitui-sonar-db-a-longo-prazo)) |
 | Correlação cross-scanner | ⏳ adiado (precisa 2º scanner) |
 | Enriquecimento IA | ⏳ adiado |
 
-Estamos na **fase 1** do roadmap: pipeline E2E vivo, findings persistidos, próximo passo é 2º scanner + camada de IA sobre `pequod`.
+Estamos na **fase 1** do roadmap: pipeline E2E vivo, findings persistidos. Próximos passos: (i) migrar extração SARIF pra dentro do scanner image, (ii) adicionar 2º scanner, (iii) camada de IA sobre `pequod`.

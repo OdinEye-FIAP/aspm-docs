@@ -5,7 +5,7 @@
 | Repo | Função | Stack | Estado |
 |---|---|---|---|
 | [`captain-hook`](https://github.com/OdinEye-FIAP/captain-hook) | Ingest de webhook GitHub → publica jobs no Kafka | FastAPI + aiokafka | ✅ ativo |
-| [`moby-dick`](https://github.com/OdinEye-FIAP/moby-dick) | Consumer Kafka → spawna container scanner → extrai SARIF → publica `findings.raw` → reporta check_run | FastAPI + Docker SDK + PyJWT | ✅ ativo |
+| [`moby-dick`](https://github.com/OdinEye-FIAP/moby-dick) | Consumer Kafka → spawna container scanner → extrai arquivo SARIF do container → publica `findings.raw` → reporta check_run | FastAPI + Docker SDK + PyJWT | ✅ ativo |
 | [`pequod`](https://github.com/OdinEye-FIAP/pequod) | Consumer `findings.raw` → normaliza SARIF → upsert por fingerprint → REST | FastAPI + aiokafka + asyncpg | ✅ ativo |
 | [`clint-eastwood`](https://github.com/OdinEye-FIAP/clint-eastwood) | Repo de teste/demo com código intencionalmente vulnerável | JS | 🧪 demo |
 | [`aspm-docs`](https://github.com/OdinEye-FIAP/aspm-docs) | Esta documentação | MkDocs Material | 📚 doc |
@@ -43,7 +43,7 @@ DEFAULT_JOB_IMAGE=aspm-sonar-runner:latest
 
 ## moby-dick
 
-**Papel:** orquestrador da execução + extrator de findings.
+**Papel:** orquestrador de Docker. Nada além disso.
 
 **Responsabilidades:**
 
@@ -53,14 +53,19 @@ DEFAULT_JOB_IMAGE=aspm-sonar-runner:latest
 - Mesclar `GIT_TOKEN` no env do container
 - Rodar container Docker da image especificada no `JobDescriptor`
 - Coletar exit code + logs
-- Após scan: chamar `GET /api/issues/search` na Sonar API, converter para SARIF v2.1.0 e publicar em `findings.raw`
+- Extrair `/tmp/scan.sarif.json` do container via `container.get_archive()` (formato neutro, scanner-agnóstico)
+- Publicar SARIF em `findings.raw`
 - Atualizar `check_run` com `conclusion=success/failure`
 
 **O que NÃO faz:**
 
+- Não conhece nenhum scanner específico (Sonar, Semgrep, Trivy)
+- Não chama API de scanner — toda conversa scanner-específica vive **dentro da image** do scanner
 - Não persiste findings (delega ao `pequod`)
 - Não normaliza SARIF em entidade de domínio (delega ao `pequod`)
-- Não conhece schema do banco do pequod
+
+!!! info "Estado transitório (Decisão §11)"
+    Hoje `moby-dick/adapter/sonar/issues_to_sarif.py` ainda chama a Sonar API diretamente. A migração pra dentro do `sonar-runner` (entrypoint emite `/tmp/scan.sarif.json`) está planejada — após ela, moby-dick fica realmente Docker-only.
 
 **Entry:** `main.py` → FastAPI + background consumer loop.
 
@@ -73,21 +78,19 @@ GITHUB_INSTALLATION_ID=...
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 DOCKER_NETWORK=aspm-net
 DOCKER_RUN_TIMEOUT_SECONDS=600
-SONAR_HOST_URL=http://aspm-sonarqube:9000
-SONAR_TOKEN=<global analysis token>
-SONAR_API_TIMEOUT_SECONDS=30
 TOPIC_FINDINGS_RAW=findings.raw
+# SARIF dentro do container (convenção shared com scanner image)
+SARIF_OUTPUT_PATH=/tmp/scan.sarif.json
 ```
 
 **Pastas-chave:**
 
 - `controller/job_controller.py` — fluxo de processamento de job + publicação de findings
-- `adapter/sonar/issues_to_sarif.py` — Sonar API → SARIF v2.1.0
 - `diplomat/http_out/github_client.py` — GitHub App API client
-- `diplomat/runner/docker_runner.py` — Docker SDK wrapper
+- `diplomat/runner/docker_runner.py` — Docker SDK wrapper + extração de arquivo
 - `diplomat/messaging/kafka_consumer.py` — consumer Kafka (`jobs.orchestration`)
 - `diplomat/messaging/kafka_producer.py` — producer Kafka (`findings.raw`)
-- `deploy/sonar-runner/` — Dockerfile + entrypoint do scanner
+- `deploy/sonar-runner/` — Dockerfile + entrypoint do scanner (dono do conhecimento Sonar)
 
 ## pequod
 

@@ -150,23 +150,38 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 
 ---
 
-## 11. Extração de findings via Sonar API no moby-dick (síncrono)
+## 11. Extração de findings dentro da scanner image (target arquitetural)
 
-**Decisão:** moby-dick chama `GET /api/issues/search` da Sonar API **após** `container.wait()` do scanner, converte resposta → SARIF, publica `findings.raw`, **depois** patcha `check_run`. Tudo no path crítico de `process_job`.
+**Decisão atual (transitória):** moby-dick chama `GET /api/issues/search` da Sonar API após `container.wait()` do scanner, converte resposta → SARIF, publica `findings.raw`. Vive em `moby-dick/adapter/sonar/issues_to_sarif.py`.
 
-**Por quê:**
-- Mantém o scanner dumb (`sonar-runner` só roda `sonar-scanner`; não conhece Sonar API). Decisão §5 preservada.
-- Sync garante ordem: pequod tem finding antes do dev ver check verde no PR.
-- Falha de extração/publish → job inteiro falha → check_run vermelho → visível, fix rápido (sem perda silenciosa).
-- Latência extra estimada 1-3s. Aceitável pro check_run que já leva minutos no scan.
+**Decisão revista (target):** a chamada Sonar API + conversão SARIF **migra para dentro do `sonar-runner` (image do scanner)**. Scanner image fica self-contained:
+
+1. `git clone` do código
+2. `sonar-scanner` faz upload
+3. `curl` em `/api/issues/search` (mesma rede `aspm-net`)
+4. Converte resposta para SARIF v2.1.0
+5. Escreve `/tmp/scan.sarif.json`
+
+moby-dick passa a usar `container.get_archive("/tmp/scan.sarif.json")` para extrair o arquivo, sem nunca falar com Sonar.
+
+**Por quê mudar:**
+- **Decisão §5 efetivamente preservada** — moby-dick volta a ser Docker-only. Não conhece Sonar API, formato, nem URL.
+- **Decisão §12 (SARIF) reforçada na fronteira certa** — scanner image é dona do "como gerar SARIF". moby-dick e pequod só veem SARIF puro.
+- **Onboarding de novo scanner = só build de image.** Semgrep tem `--sarif` nativo: `semgrep --sarif --output /tmp/scan.sarif.json`. Zero código novo em moby-dick/pequod.
+- **Resolve o problema de DNS de graça** — container já está em `aspm-net`, então `aspm-sonarqube:9000` resolve nativamente. moby-dick não precisa expor Sonar em rota acessível pelo host.
 
 **Trade-off aceito:**
-- Sonar API lenta ou Kafka down trava o check_run também. Mitigação: timeout curto na call Sonar + retry idempotente do consumer.
-- Acopla "feedback ao dev" com "persistência interna". Aceitável no MVP.
+- `entrypoint.sh` do `sonar-runner` cresce (~15 linhas: curl + jq/python p/ converter)
+- moby-dick `docker_runner` precisa de método `extract_file(container, path)` usando `get_archive` + parsing de tar in-memory
+- `SARIF` no Kafka pode ser grande (10-100 KB); particionar `findings.raw` por `repo_id` e considerar compactação no producer (`compression_type="gzip"`) quando virar problema
 
-**Localização:** `moby-dick/adapter/sonar/issues_to_sarif.py`. Controller orquestra; adapter só traduz.
+**Plano de migração:**
+1. `moby-dick/deploy/sonar-runner/entrypoint.sh` — adiciona steps 3-5 acima
+2. `moby-dick/diplomat/runner/docker_runner.py` — `RunResult.sarif: Optional[Dict]`; método auxiliar pra extrair arquivo
+3. `moby-dick/controller/job_controller.py` — `_publish_findings` lê `result.sarif` (sem chamar Sonar API)
+4. **Deletar** `moby-dick/adapter/sonar/issues_to_sarif.py`
 
-**Quando revisitar:** latência do check_run virar reclamação real do dev OU Sonar API ficar instável. Refactor pra `asyncio.create_task` é trivial.
+**Quando revisitar:** se SARIF cru passar de ~500 KB consistentemente (re-pensar persistência de SARIF cru em S3/MinIO).
 
 ---
 
@@ -200,6 +215,38 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 **Trade-off aceito:**
 - `gh_847291` não é legível no Sonar UI. Mitigação: `sonar.projectName="OdinEye-FIAP/clint-eastwood"` (label humano, key estável).
 - Migração de repos já onboardados: precisa renomear projeto no Sonar via `/api/projects/update_key`.
+
+---
+
+## 14. Pequod como source-of-truth de findings (substitui sonar-db a longo prazo)
+
+**Intenção (não migração ainda):** o `pequod` é desenhado pra eventualmente **substituir o papel do `sonar-db` como repositório autoritativo de findings da organização**. UI de triagem, integrações de IA, métricas e workflows consumirão o pequod, não o Sonar UI.
+
+**Importante — o que isso NÃO significa:**
+- ❌ Não vamos remover o `sonar-db`. SonarQube Community Build exige postgres externo (§2). Sem ele o scanner não roda.
+- ❌ Não estamos competindo com o Sonar UI pra inspeção pontual de issues. Quem quiser olhar issue isolada pode continuar usando.
+
+**O que significa:**
+- ✅ O `sonar-db` vira **scratch interno** do scanner — espaço de trabalho transitório, não fonte de consulta organizacional.
+- ✅ `pequod` é a base canônica: dedup por `(fingerprint, repo_id)`, histórico de status (open/triaged/false_positive/resolved), retenção controlada por nós.
+- ✅ Toda integração nova (UI, ai-triage, notifier, métricas) consulta pequod. Sonar UI fica para troubleshooting do scanner.
+
+**Por quê:**
+- `sonar-db` é schema fechado do Sonar — não podemos adicionar coluna `status`, `triage_notes`, `enrichment_ai_*` sem quebrar update do Sonar.
+- Multi-scanner exige store unificado (§12 SARIF). `sonar-db` por definição só sabe Sonar.
+- Backup, retenção, compliance: querer manter findings por 2 anos vs configuração padrão do Sonar é luta perdida — controlar `pequod` é trivial.
+- Triagem manual via `PATCH /findings/{id}` precisa de schema que aceite estados além dos que o Sonar suporta nativamente.
+
+**Trade-off aceito:**
+- Duplicação temporária de findings (vivem no `sonar-db` interno do Sonar **e** no `pequod`). Storage barato, OK no MVP.
+- Sonar UI mostra dados que podem divergir do pequod após triagem manual (ex: dev marca como `false_positive` no pequod, Sonar continua acusando). Documentar bem: **fonte de verdade é o pequod**, Sonar UI é para inspecionar o scan.
+
+**Caminhos futuros considerados:**
+- Trocar Sonar por scanner stateless (Semgrep, Trivy) que não exige DB próprio → `sonar-db` desaparece.
+- Manter Sonar como engine de análise mas reduzir retenção do `sonar-db` ao mínimo (último scan por projeto).
+- API gateway sobre pequod servir como "Sonar UI substituto" pra consultas organizacionais.
+
+**Quando revisitar:** ao bootstrar UI de triagem OU ao adicionar 2º scanner (revalidar a tese de pequod-as-SoT antes de assumi-la).
 
 ---
 
