@@ -91,6 +91,8 @@ nav:
       - Arquitetura: overview/architecture.md
       - Decisões: overview/decisions.md
       - Repositórios: overview/repos.md
+  - Design:
+      - ishmael — Asset Inventory: design/ishmael.md
   - Desenvolvedor:
       - Começando: developer/getting-started.md
       - Adicionar novo scanner: developer/adding-a-scanner.md
