@@ -93,6 +93,12 @@ nav:
       - Repositórios: overview/repos.md
   - Design:
       - ishmael — Asset Inventory: design/ishmael.md
+  - Projetos:
+      - Pequod: pequod.md
+      - Moby-dick: moby-dick.md
+      - TARS AI: tars-ai.md
+      - Heimdall Dashboard: heimdall-dashboard.md
+      - Captain-hook: captain-hook.md
   - Desenvolvedor:
       - Começando: developer/getting-started.md
       - Adicionar novo scanner: developer/adding-a-scanner.md
