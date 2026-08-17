@@ -86,3 +86,13 @@ flowchart LR
 | Enriquecimento IA | ⏳ adiado |
 
 Estamos na **fase 1** do roadmap: pipeline E2E vivo, findings persistidos. Próximos passos: (i) migrar extração SARIF pra dentro do scanner image, (ii) adicionar 2º scanner, (iii) camada de IA sobre `pequod`.
+
+## Projetos documentados
+
+- [Pequod](pequod.md) — camada de persistência de findings
+- [Moby-dick](moby-dick.md) — orquestrador Docker
+- [TARS AI](tars-ai.md) — serviço de IA para triagem/enriquecimento
+- [Heimdall Dashboard](heimdall-dashboard.md) — frontend de visualização
+- [Captain-hook](captain-hook.md) — ingest de webhooks GitHub
+
+Última atualização: 2026-08-17T23:32:31.855Z
