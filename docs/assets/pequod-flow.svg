@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="200" viewBox="0 0 800 200">
+  <style> .box{fill:#fff;border-radius:4px;stroke:#1f2937;stroke-width:1px;} .txt{font:12px sans-serif;fill:#0f172a;} .arrow{fill:none;stroke:#0f172a;stroke-width:2;marker-end:url(#m);} </style>
+  <defs>
+    <marker id="m" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#0f172a"/></marker>
+  </defs>
+  <rect x="20" y="30" width="120" height="40" rx="6" class="box"/>
+  <text x="80" y="55" text-anchor="middle" class="txt">Moby-dick</text>
+  <rect x="180" y="15" width="140" height="70" rx="6" class="box"/>
+  <text x="250" y="45" text-anchor="middle" class="txt">Kafka / Redpanda\n(topic: findings.raw)</text>
+  <rect x="360" y="30" width="120" height="40" rx="6" class="box"/>
+  <text x="420" y="55" text-anchor="middle" class="txt">Pequod</text>
+  <rect x="520" y="10" width="160" height="80" rx="6" class="box"/>
+  <text x="600" y="45" text-anchor="middle" class="txt">pequod-db (Postgres)\n(table: finding)</text>
+  <rect x="20" y="120" width="120" height="40" rx="6" class="box"/>
+  <text x="80" y="145" text-anchor="middle" class="txt">Scanner</text>
+  <path class="arrow" d="M140 50 L180 50" />
+  <text x="160" y="42" class="txt" text-anchor="middle">publish findings.raw (SARIF)</text>
+  <path class="arrow" d="M320 50 L360 50" />
+  <text x="340" y="42" class="txt" text-anchor="middle">consume</text>
+  <path class="arrow" d="M480 50 L520 50" />
+  <text x="500" y="42" class="txt" text-anchor="middle">upsert finding</text>
+  <path class="arrow" d="M600 90 L600 120" />
+  <text x="620" y="105" class="txt">read findings</text>
+</svg>

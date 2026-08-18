@@ -42,3 +42,5 @@ flowchart LR
   SR -->|emit SARIF -> findings.raw| K
   K -->|consume| PQ
 ```
+
+![Fluxo de dados — Moby-dick](assets/moby-dick-flow.svg)
