@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="160" viewBox="0 0 700 160">
+  <style> .box{fill:#fff;stroke:#0f172a;stroke-width:1px;} .txt{font:12px sans-serif;fill:#0f172a;} .arrow{fill:none;stroke:#0f172a;stroke-width:2;marker-end:url(#m);} </style>
+  <defs>
+    <marker id="m" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#0f172a"/></marker>
+  </defs>
+  <rect x="20" y="40" width="160" height="50" rx="6" class="box"/>
+  <text x="100" y="70" text-anchor="middle" class="txt">Pequod DB</text>
+  <rect x="260" y="40" width="160" height="50" rx="6" class="box"/>
+  <text x="340" y="70" text-anchor="middle" class="txt">TARS AI (API)</text>
+  <rect x="500" y="40" width="160" height="50" rx="6" class="box"/>
+  <text x="580" y="70" text-anchor="middle" class="txt">Heimdall Dashboard</text>
+  <path class="arrow" d="M180 65 L260 65" />
+  <text x="220" y="57" class="txt" text-anchor="middle">findings</text>
+  <path class="arrow" d="M420 65 L500 65" />
+  <text x="460" y="57" class="txt" text-anchor="middle">GET /ai/analyses</text>
+</svg>

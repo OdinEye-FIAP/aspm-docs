@@ -33,3 +33,5 @@ flowchart LR
   GH -->|webhook (PR opened/synchronize)| CH
   CH -->|publish jobs.orchestration| K
 ```
+
+![Fluxo de dados — Captain-hook](assets/captain-hook-flow.svg)

@@ -45,3 +45,5 @@ flowchart LR
   PQ -->|upsert findings| PDB
   PDB -->|read findings| T
 ```
+
+![Fluxo de dados — Pequod](assets/pequod-flow.svg)

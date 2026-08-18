@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="220" viewBox="0 0 900 220">
+  <style> .box{fill:#fff;stroke:#0f172a;stroke-width:1px;} .txt{font:12px sans-serif;fill:#0f172a;} .arrow{fill:none;stroke:#0f172a;stroke-width:2;marker-end:url(#m);} </style>
+  <defs>
+    <marker id="m" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#0f172a"/></marker>
+  </defs>
+  <rect x="20" y="20" width="140" height="50" rx="6" class="box"/>
+  <text x="90" y="50" text-anchor="middle" class="txt">GitHub PR</text>
+  <rect x="200" y="20" width="140" height="50" rx="6" class="box"/>
+  <text x="270" y="50" text-anchor="middle" class="txt">captain-hook\n(webhook)</text>
+  <rect x="380" y="5" width="160" height="80" rx="6" class="box"/>
+  <text x="460" y="45" text-anchor="middle" class="txt">Kafka / Redpanda\n(topic: jobs.orchestration)</text>
+  <rect x="580" y="20" width="140" height="50" rx="6" class="box"/>
+  <text x="650" y="50" text-anchor="middle" class="txt">Moby-dick</text>
+  <rect x="760" y="20" width="120" height="50" rx="6" class="box"/>
+  <text x="820" y="50" text-anchor="middle" class="txt">Scanner (container)</text>
+  <path class="arrow" d="M160 45 L200 45" />
+  <text x="180" y="37" class="txt" text-anchor="middle">webhook</text>
+  <path class="arrow" d="M340 45 L380 45" />
+  <text x="360" y="37" class="txt" text-anchor="middle">publish jobs</text>
+  <path class="arrow" d="M540 45 L580 45" />
+  <text x="560" y="37" class="txt" text-anchor="middle">consume</text>
+  <path class="arrow" d="M720 45 L760 45" />
+  <text x="740" y="37" class="txt" text-anchor="middle">spawn container</text>
+</svg>

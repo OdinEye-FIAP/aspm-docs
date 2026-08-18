@@ -35,3 +35,5 @@ flowchart LR
   T -->|exposes API /ai/analyses| H
   H -->|requests| T
 ```
+
+![Fluxo de dados — Heimdall](assets/heimdall-flow.svg)

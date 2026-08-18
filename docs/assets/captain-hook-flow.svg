@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="140" viewBox="0 0 600 140">
+  <style> .box{fill:#fff;stroke:#0f172a;stroke-width:1px;} .txt{font:12px sans-serif;fill:#0f172a;} .arrow{fill:none;stroke:#0f172a;stroke-width:2;marker-end:url(#m);} </style>
+  <defs>
+    <marker id="m" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#0f172a"/></marker>
+  </defs>
+  <rect x="20" y="30" width="160" height="50" rx="6" class="box"/>
+  <text x="100" y="60" text-anchor="middle" class="txt">GitHub Webhook</text>
+  <rect x="240" y="30" width="160" height="50" rx="6" class="box"/>
+  <text x="320" y="60" text-anchor="middle" class="txt">captain-hook\n(receive HMAC)</text>
+  <rect x="460" y="20" width="120" height="70" rx="6" class="box"/>
+  <text x="520" y="55" text-anchor="middle" class="txt">Kafka / Redpanda\n(topic: jobs.orchestration)</text>
+  <path class="arrow" d="M180 55 L240 55" />
+  <text x="210" y="47" class="txt" text-anchor="middle">POST /webhook</text>
+  <path class="arrow" d="M400 55 L460 55" />
+  <text x="430" y="47" class="txt" text-anchor="middle">publish JobDescriptor v1</text>
+</svg>
