@@ -110,6 +110,7 @@ nav:
   - Referência:
       - JobDescriptor v1: reference/job-descriptor.md
       - Finding v1: reference/finding-v1.md
+      - Schema do banco: reference/database-schema.md
       - Tópicos Kafka: reference/kafka-topics.md
       - Endpoints HTTP: reference/http-endpoints.md
 
