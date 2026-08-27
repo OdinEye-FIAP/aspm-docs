@@ -614,6 +614,14 @@ Ao investigar `finding_identifiers` mais a fundo (a pedido do usuário), encontr
 futuro para guardar contexto extra do identificador — ex: versão do PURL, campos extras do SARIF —
 manter, mas documentar a intenção). Sem uso real hoje, é overhead de schema sem benefício.
 
+**Verificação adicional (usuário perguntou se aparece no front):** confirmado que não.
+`pequod/wire/outbound/finding_response.py` (contrato de `GET /findings/{id}`) não expõe
+`identifiers`/`metadata` de `finding_identifiers` de forma alguma. E no `heimdall-dashboard`, o
+único `metadata` usado (`src/components/SecurityGatePanel.tsx`, `src/types/governance.ts`) é de
+outras entidades (`security_gate_evaluations`, `quality_gate_runs` — campos como
+`pull_request_number`, `head_ref`), sem nenhuma relação com `finding_identifiers`. O campo é
+duplamente morto: não é populado no backend nem consumido/exibido em lugar nenhum do front.
+
 **Achado adicional durante a mesma investigação (já registrado no item #1 acima):**
 `identifier_extractor.py` é o **3º consumidor** de `finding.sarif_raw` que não havíamos mapeado —
 ele lê `finding.sarif_raw.properties` para extrair identificadores que só existem no SARIF bruto.
