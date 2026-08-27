@@ -94,6 +94,7 @@ erDiagram
         text default_branch
         text business_criticality
         text exposure
+        text owner_name
         boolean is_active
     }
     security_tools {
@@ -376,6 +377,8 @@ Relação N:1 entre `finding` e `finding_cluster` (cada finding pertence a no m�
 
 ### `applications`
 Repositório/aplicação registrada no ecossistema (via GitHub App). Colunas: `repository_provider`/`repository_external_id`/`repository_full_name`, `name`, `default_branch`, `language`, `business_criticality`, `exposure`, `owner_name`/`team_name`, `github_installation_id`, `is_active`.
+
+> **Não existem tabelas dedicadas `repositories` ou `organizations`.** As telas "Repositórios" e "Organizações" do heimdall-dashboard são visões derivadas de `applications`: cada linha de `applications` já É um repositório registrado, e "Organização" é simplesmente o agrupamento de `applications` pelo campo `owner_name` (conta/organização GitHub), feito em runtime por `list_organizations_on_connection()` (`pequod/diplomat/db/rest_query_repo.py`) — não há persistência própria para organização.
 
 ### `security_tools`
 Catálogo de scanners/ferramentas de segurança integradas. Colunas: `slug` (UNIQUE), `name`, `vendor`, `scanner_class`, `is_active`.
