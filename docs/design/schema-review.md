@@ -1,6 +1,14 @@
 # Revisão do schema/fluxo de dados do Pequod
 
-!!! warning "Documento de discussão — nenhuma decisão foi implementada ainda"
+!!! danger "Discussão abortada (2026-08-27) — nenhuma mudança será implementada"
+    Após mapear o impacto completo (Fases 1-3, arquivos afetados, riscos de migração), o usuário
+    decidiu **não seguir com nenhuma das mudanças propostas neste documento** — o risco de mexer
+    em schema de produção sem certeza total não compensa o ganho de enxugamento. Este documento
+    fica preservado como **registro histórico da análise**, caso a discussão seja retomada no
+    futuro com mais contexto/necessidade real. Nenhum código ou schema do pequod foi alterado em
+    nenhum momento desta discussão — tudo abaixo é só análise.
+
+!!! warning "Documento de discussão — nenhuma decisão foi implementada"
     Este documento acumula uma revisão em andamento do schema do Pequod, buscando enxugar
     tabelas redundantes e simplificar o fluxo de dados. **Não é uma decisão fechada** — é um
     rascunho vivo enquanto o schema é discutido item a item. Nenhuma mudança de schema/código
