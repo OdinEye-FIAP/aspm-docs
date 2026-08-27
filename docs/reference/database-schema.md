@@ -4,6 +4,289 @@ Referência das tabelas do banco relacional do Pequod. Source-of-truth em `pequo
 
 Convenção de nomenclatura: `finding_cluster`/`finding_cluster_member` representam o **agrupamento técnico bruto, pré-IA** (determinístico, por `correlation_key`). `consolidated_risk` representa o **risco já decidido** (via IA `propose_semantic_clustering` ou auto-attach determinístico), que é o que a UI (heimdall-dashboard) exibe como "Risco consolidado". Ver [decisions.md](../overview/decisions.md) para o histórico dessa distinção.
 
+## Diagrama (estilo dbdiagram)
+
+Diagramas Mermaid ER com colunas e tipos, agrupados por domínio (mesma divisão do `schema.sql`). Renderizam como caixas de tabela conectadas no GitHub e no mkdocs-material.
+
+### Findings e correlação
+
+```mermaid
+erDiagram
+    finding {
+        uuid id PK
+        text fingerprint
+        text scanner
+        text scanner_class
+        text rule_id
+        text severity
+        text repo
+        text repo_id
+        text ref
+        text file_path
+        int line_start
+        int line_end
+        text location_type
+        jsonb location
+        jsonb evidence
+        jsonb properties
+        text status
+        uuid application_id FK
+        uuid tool_id FK
+    }
+    finding_ai_analysis {
+        uuid id PK
+        uuid finding_id FK
+        text recommendation
+        text priority
+        numeric confidence
+        text model_name
+    }
+    finding_cluster {
+        uuid id PK
+        text repo
+        text repo_id
+        text ref
+        text title
+        text category
+        text correlation_key
+        text primary_file_path
+        text primary_location_type
+        jsonb primary_location
+        text severity
+        numeric confidence
+    }
+    finding_cluster_ai_analysis {
+        uuid id PK
+        uuid cluster_id FK
+        text summary
+        text impact
+        text recommendation
+        text priority
+        text false_positive_likelihood
+        numeric confidence
+        text reasoning_short
+    }
+    finding_cluster_member {
+        uuid id PK
+        uuid cluster_id FK
+        uuid finding_id FK
+        text scanner
+        text rule_id
+        numeric match_score
+    }
+
+    finding ||--o| finding_ai_analysis : "finding_id"
+    finding ||--o| finding_cluster_member : "finding_id (1:1)"
+    finding_cluster ||--o{ finding_cluster_member : "cluster_id"
+    finding_cluster ||--o| finding_cluster_ai_analysis : "cluster_id"
+```
+
+### Inventário, execuções e occurrences
+
+```mermaid
+erDiagram
+    applications {
+        uuid id PK
+        text repository_provider
+        text repository_external_id
+        text repository_full_name
+        text name
+        text default_branch
+        text business_criticality
+        text exposure
+        boolean is_active
+    }
+    security_tools {
+        uuid id PK
+        text slug
+        text name
+        text scanner_class
+        boolean is_active
+    }
+    scans {
+        uuid id PK
+        uuid application_id FK
+        uuid tool_id FK
+        text scan_type
+        text scanner_class
+        text scan_status
+        text external_run_id
+        text ref
+        text commit_sha
+    }
+    scan_artifacts {
+        uuid id PK
+        uuid scan_id FK
+        text artifact_type
+        text artifact_key
+        text storage_uri
+        jsonb inline_content
+    }
+    finding_occurrences {
+        uuid id PK
+        uuid finding_id FK
+        uuid scan_id FK
+        text location_type
+        jsonb location
+        text severity
+        text message
+    }
+    finding_identifiers {
+        uuid id PK
+        uuid finding_id FK
+        text identifier_type
+        text identifier_value
+        text source
+    }
+    finding {
+        uuid id PK
+        uuid application_id FK
+        uuid tool_id FK
+    }
+
+    applications ||--o{ finding : "application_id"
+    applications ||--o{ scans : "application_id"
+    security_tools ||--o{ finding : "tool_id"
+    security_tools ||--o{ scans : "tool_id"
+    scans ||--o{ scan_artifacts : "scan_id"
+    scans ||--o{ finding_occurrences : "scan_id"
+    finding ||--o{ finding_occurrences : "finding_id"
+    finding ||--o{ finding_identifiers : "finding_id"
+```
+
+### Governança operacional e Quality Gate
+
+```mermaid
+erDiagram
+    alerts {
+        uuid id PK
+        uuid application_id FK
+        uuid finding_id FK
+        uuid cluster_id FK
+        uuid scan_id FK
+        text alert_type
+        text severity
+        text status
+    }
+    risk_exceptions {
+        uuid id PK
+        uuid application_id FK
+        uuid finding_id FK
+        uuid cluster_id FK
+        text exception_type
+        text status
+        text reason
+    }
+    security_gate_policies {
+        uuid id PK
+        uuid application_id FK
+        text name
+        int version
+        boolean is_active
+        text policy_mode
+        jsonb rules
+    }
+    security_gate_evaluations {
+        uuid id PK
+        uuid application_id FK
+        uuid policy_id FK
+        uuid scan_id FK
+        text status
+        text decision
+        int total_findings
+        int total_clusters
+    }
+    security_gate_items {
+        uuid id PK
+        uuid evaluation_id FK
+        uuid finding_id FK
+        uuid cluster_id FK
+        uuid risk_exception_id FK
+        text item_type
+        text decision
+    }
+    quality_gate_runs {
+        uuid id PK
+        uuid application_id FK
+        uuid evaluation_id FK
+        text workflow_id
+        text repository_id
+        bigint pull_request_number
+        text head_sha
+        text status
+        text decision
+    }
+    quality_gate_scanner_runs {
+        uuid id PK
+        uuid quality_gate_run_id FK
+        uuid scan_id FK
+        text scanner
+        text scanner_class
+        text status
+        int findings_count
+    }
+
+    security_gate_policies ||--o{ security_gate_evaluations : "policy_id"
+    security_gate_evaluations ||--o{ security_gate_items : "evaluation_id"
+    security_gate_evaluations ||--o| quality_gate_runs : "evaluation_id (opcional)"
+    risk_exceptions ||--o{ security_gate_items : "risk_exception_id (opcional)"
+    quality_gate_runs ||--o{ quality_gate_scanner_runs : "quality_gate_run_id"
+```
+
+### Consolidação semântica de risco
+
+```mermaid
+erDiagram
+    semantic_clustering_decision {
+        uuid id PK
+        uuid proposal_id
+        uuid application_id FK
+        text repo
+        text repo_id
+        text ref
+        text model_name
+        text status
+        jsonb proposal
+    }
+    consolidated_risk {
+        uuid id PK
+        uuid decision_id FK
+        uuid application_id FK
+        text repo
+        text repo_id
+        text ref
+        text canonical_title
+        text canonical_category
+        text priority
+        text false_positive_likelihood
+        numeric confidence
+        text summary
+        text impact
+        text recommendation
+        text ai_action
+    }
+    consolidated_risk_candidate {
+        uuid risk_id FK
+        uuid cluster_id FK
+    }
+    consolidated_risk_finding {
+        uuid risk_id FK
+        uuid finding_id FK
+    }
+    finding_cluster {
+        uuid id PK
+    }
+    finding {
+        uuid id PK
+    }
+
+    semantic_clustering_decision ||--o{ consolidated_risk : "decision_id"
+    consolidated_risk ||--o{ consolidated_risk_candidate : "risk_id"
+    consolidated_risk ||--o{ consolidated_risk_finding : "risk_id"
+    finding_cluster ||--o{ consolidated_risk_candidate : "cluster_id"
+    finding ||--o{ consolidated_risk_finding : "finding_id"
+```
+
 ## Relacionamentos entre tabelas (FKs)
 
 Tabela de referência com toda foreign key do schema: tabela de origem, coluna, tabela/coluna referenciada, cardinalidade e comportamento de delete.
