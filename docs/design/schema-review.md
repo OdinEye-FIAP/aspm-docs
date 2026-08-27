@@ -108,6 +108,140 @@ sequenceDiagram
 > e #2c registradas neste documento, dependente de aprovação e planejamento de migração antes de
 > qualquer código ser alterado.
 
+## Tabelas adicionais verificadas antes de fechar o plano (sem achados novos)
+
+Antes de fechar o plano definitivo, revisamos `consolidated_risk_candidate` vs.
+`consolidated_risk_finding`, `risk_exceptions` e `semantic_clustering_decision` — os únicos
+grupos de tabelas ainda não aprofundados na revisão.
+
+- **`consolidated_risk_finding` NÃO é redundante com `consolidated_risk_candidate` +
+  `finding_cluster_member`.** Achado em `tars_integration_controller.py` (linha ~318): um cluster
+  candidato pode ter N findings, mas a IA seleciona um **subconjunto** deles (`selected_findings`)
+  como efetivamente compondo o risco consolidado — os demais findings do cluster podem ficar de
+  fora (ex: considerados falso positivo dentro do próprio cluster). Essa seleção é informação
+  genuína da decisão de IA, não derivável a partir do cluster inteiro. **Mantida como está.**
+- **`risk_exceptions`** — usada ativamente (controller, handler HTTP, repo dedicados,
+  `security_gate_evaluator.py` consome pra decidir policy). Funcionalidade real e distinta, sem
+  sobreposição com outras tabelas. **Mantida como está.**
+- **`semantic_clustering_decision`** — usada ativamente pelo fluxo de IA/clustering semântico
+  (`semantic_clustering_repo.py`, `tars_integration_controller.py`). Sem sobreposição encontrada.
+  **Mantida como está.**
+
+## Plano definitivo de implementação (se e quando decidirmos seguir)
+
+**Importante:** nada abaixo foi implementado. Este plano existe para ficar pronto para execução,
+com sequenciamento pensado para minimizar risco (menor escopo primeiro), mas a decisão de quando
+(ou se) implementar continua sendo do usuário, um item por vez.
+
+### Ordem recomendada (menor → maior risco)
+
+**Fase 1 — `finding.sarif_raw` (item #1)**
+
+1. Corrigir `pequod/diplomat/db/tars_integration_repo.py`: trocar o `COALESCE(occurrence.raw_payload,
+   f.sarif_raw, '{}')` por uma subquery correlacionada em `finding_occurrences` (mais recente por
+   `observed_at`), já que o fallback em `f.sarif_raw` deixa de existir.
+2. Ajustar `pequod/diplomat/http_in/findings_handler.py` / `query_controller.get_finding` para
+   buscar o payload via `finding_occurrences` (subquery/JOIN), não mais `finding.sarif_raw`.
+3. Remover o campo de `pequod/model/finding.py`, `pequod/wire/outbound/finding_response.py`.
+4. Remover as 7 referências em `pequod/diplomat/db/finding_repo.py` (INSERT/UPDATE/SELECT).
+5. Ajustar `pequod/adapter/sarif/sarif_to_finding.py` e `identifier_extractor.py` (paravam de
+   popular o campo na construção do model).
+6. Migração de schema: `ALTER TABLE finding DROP COLUMN sarif_raw` (dado histórico já replicado em
+   `finding_occurrences`, nada a migrar além de conferir integridade antes do DROP).
+7. Atualizar testes: `test_finding_occurrence.py`, `test_identifier_extractor.py`,
+   `test_finding_occurrence_repo.py`, e os testes de `finding_repo`/`findings_handler` existentes.
+
+**Fase 2 — `findings.raw`: Kafka → HTTP direto (item #0)**
+
+> Escopo restrito ao tópico `findings.raw` apenas (não inclui `workflow.started`/`scanner.completed`
+> nesta fase — ver nota de escopo abaixo).
+
+1. `pequod/diplomat/http_in/` — novo endpoint (ex: `POST /api/v1/internal/scans/ingest`) que recebe
+   o mesmo payload de `FindingsRawEvent`, chamando `ingest_controller.process_findings_raw`
+   diretamente (reaproveitando toda a lógica interna, só troca o transporte de entrada).
+2. `pequod/diplomat/messaging/kafka_consumer.py` — remove o registro do tópico `findings.raw`
+   (mantém os demais tópicos, se não migrados nesta fase).
+3. `moby-dick/diplomat/http_out/pequod_client.py` — novo método `submit_findings_raw(...)`, no
+   mesmo padrão de `evaluate_quality_gate` (retry/backoff já existente).
+4. `moby-dick/controller/job_controller.py` (`_publish_findings`, linha ~388) — troca
+   `get_publisher().publish(topic=...)` pela chamada ao novo método do client.
+5. Remover `topic_findings_raw`/`topic_findings_raw_dlq` de `pequod/config/settings.py` e do
+   `.env.example` de ambos os serviços, se não usados em mais nada.
+6. Atualizar testes de `job_controller` (moby-dick) e `ingest_controller`/rotas HTTP (pequod).
+7. **Nota de escopo:** os tópicos `workflow.started` e `scanner.completed` (usados no
+   `quality_gate_controller.py`) **não fazem parte desta fase** — o diagrama "idealizado" mostrado
+   anteriormente inclui a migração completa dos 3 tópicos para HTTP, mas isso é uma extensão maior
+   do que o discutido até aqui. Se o usuário quiser incluir esses dois tópicos também, tratar como
+   Fase 2b separada, com o mesmo padrão de client HTTP.
+
+**Fase 3 — Fundir `scans` + `quality_gate_scanner_runs` (item #2c)**
+
+> Maior risco — depende da Fase 2 estar concluída (ou ao menos decidida), já que
+> `attach_scan_by_job_id` e o consumo de `findings.raw` mudam de qualquer forma.
+
+1. Migração de schema: `scans` ganha `quality_gate_run_id uuid` (nullable inicialmente, para
+   permitir backfill), `error_code text`, `error_message text`; tornar `scans.tool_id` e
+   `scans.application_id` nullable (ou resolver `tool_id` a partir do nome do scanner no momento
+   do anúncio, via catálogo `security_tools`).
+2. Migração de dados: para cada linha de `quality_gate_scanner_runs` com `scan_id` preenchido,
+   copiar `quality_gate_run_id` para a linha correspondente de `scans`; para linhas sem `scan_id`
+   (scanner anunciado mas nunca concluído), decidir se descarta (histórico órfão) ou cria uma linha
+   `scans` com status `abandoned`/`timed_out`.
+3. `pequod/controller/quality_gate_controller.py` — reescrever `_assert_expected_scanner`,
+   lógica de timeout (`expires_at`), e o handler de `scanner.started`/`scanner.completed` para
+   criar/atualizar `scans` diretamente ao invés de `quality_gate_scanner_runs`.
+4. `pequod/diplomat/db/quality_gate_repo.py`, `security_gate_evaluation_repo.py` — reapontar os
+   JOINs que hoje leem `quality_gate_scanner_runs` para `scans` filtrado por `quality_gate_run_id`.
+5. `pequod/model/scan.py` — adicionar `quality_gate_run_id`, `error_code`, `error_message`.
+6. Remover `pequod/deploy/schema.sql` a definição de `quality_gate_scanner_runs` só depois de
+   confirmar que nenhum código mais referencia a tabela (grep de varredura final).
+7. Atualizar todos os testes que hoje montam fixtures de `quality_gate_scanner_runs`.
+
+### O que ainda precisa de decisão do usuário antes de qualquer fase começar
+
+- **Fase 1**: nenhuma decisão pendente — pode ser feita isoladamente a qualquer momento.
+- **Fase 2**: decidir se HTTP direto vai ser moby-dick→pequod puro, ou se passa por um BFF
+  dedicado (mencionado pelo usuário como alternativa). Também decidir se as filas
+  `workflow.started`/`scanner.completed` entram no escopo (Fase 2b) ou ficam de fora por ora.
+- **Fase 3**: decidir o que fazer com `quality_gate_scanner_runs` órfãs (scanner anunciado, nunca
+  concluído) durante a migração de dados — descartar ou preservar como `scans` com status especial.
+- Todas as fases devem rodar primeiro em ambiente de teste/staging antes de qualquer produção,
+  com a migração de schema sendo reversível (manter backup/rollback script).
+
+## Resumo final: como ficam as 22 tabelas após o plano completo
+
+| Tabela | Situação após o plano |
+|---|---|
+| `finding` | Mantida, **perde a coluna `sarif_raw`** (Fase 1) |
+| `finding_ai_analysis` | Mantida como está — decisão de fundir em `finding` **pendente** (usuário não confirmou se quer histórico futuro) |
+| `finding_cluster` | Mantida sem alteração |
+| `finding_cluster_ai_analysis` | Mantida sem alteração (não aprofundada nesta revisão) |
+| `finding_cluster_member` | Mantida como está — mesma pendência de `finding_ai_analysis` |
+| `applications` | Mantida sem alteração (campos decorativos notados, não decidido remover) |
+| `security_tools` | Mantida sem alteração |
+| `scans` | **Absorve `quality_gate_scanner_runs`** (Fase 3): ganha `quality_gate_run_id`, `error_code`, `error_message`; passa a existir em estado "anunciado" antes do SARIF |
+| `scan_artifacts` | Mantida sem alteração |
+| `finding_occurrences` | Mantida — **vira a única fonte de verdade do payload SARIF por finding** (Fase 1) |
+| `finding_identifiers` | Mantida sem alteração — 1:N genuíno |
+| `alerts` | Mantida sem alteração (infra de delivery não usada notada, não decidido remover) |
+| `audit_log` | Mantida sem alteração |
+| `risk_exceptions` | Mantida sem alteração — confirmada como funcionalidade distinta e ativa |
+| `security_gate_policies` | Mantida sem alteração |
+| `security_gate_evaluations` | Mantida sem alteração (colunas de contagem denormalizadas notadas, não decidido remover) |
+| `security_gate_items` | Mantida sem alteração |
+| `quality_gate_runs` | Mantida — passa a ser a única "raiz" de todo scan (com ou sem PR) |
+| `quality_gate_scanner_runs` | **Eliminada** (Fase 3) — absorvida por `scans` |
+| `semantic_clustering_decision` | Mantida sem alteração — confirmada como funcionalidade distinta e ativa |
+| `consolidated_risk` | Mantida sem alteração |
+| `consolidated_risk_candidate` | Mantida sem alteração |
+| `consolidated_risk_finding` | Mantida sem alteração — confirmada como **não redundante** (seleção da IA é subconjunto genuíno, não derivável) |
+
+**Saldo líquido do plano completo:** de 22 tabelas, **21 tabelas** (uma eliminada:
+`quality_gate_scanner_runs`), mais a remoção de 1 coluna redundante (`finding.sarif_raw`) e a
+troca de 1 tópico Kafka por HTTP direto. Duas tabelas (`finding_ai_analysis`,
+`finding_cluster_member`) seguem como candidatas a uma 2ª rodada de fusão, condicionadas a uma
+resposta do usuário sobre planos futuros de histórico/multiplicidade.
+
 ## Fluxo de dados atual (confirmado no código)
 
 ```
@@ -207,10 +341,15 @@ SELECT raw_payload FROM finding_occurrences
 WHERE finding_id = $1 ORDER BY observed_at DESC LIMIT 1
 ```
 
-**Único consumidor de `finding.sarif_raw` hoje:** `GET /findings/{id}` (`findings_handler.py` →
-`query_controller.get_finding` → `finding_repo.get_by_id`), leitura direta sem JOIN.
+**Consumidores de `finding.sarif_raw` hoje (correção — havíamos identificado só 1, há um 2º):**
+1. `GET /findings/{id}` (`findings_handler.py` → `query_controller.get_finding` →
+   `finding_repo.get_by_id`), leitura direta sem JOIN.
+2. `pequod/diplomat/db/tars_integration_repo.py` — usa `COALESCE(occurrence.raw_payload,
+   f.sarif_raw, '{}')` como **fallback** ao montar o payload enviado ao tars-ai. Já trata
+   `finding_occurrences` como fonte primária (reforça que a coluna é redundante), mas precisa que
+   o fallback vire subquery correlacionada em vez de simplesmente remover.
 
-**Proposta:** remover a coluna `finding.sarif_raw`, trocar o handler para buscar via
+**Proposta:** remover a coluna `finding.sarif_raw`, trocar os dois consumidores para buscar via
 `finding_occurrences` (JOIN/subquery pelo finding_id, ORDER BY observed_at DESC LIMIT 1).
 Ganho: elimina duplicação real de um JSON potencialmente grande, e remove a inconsistência de
 "qual desses 2 lugares é a fonte de verdade" (resposta: `finding_occurrences` sempre foi).
