@@ -135,20 +135,27 @@ com sequenciamento pensado para minimizar risco (menor escopo primeiro), mas a d
 
 ### Ordem recomendada (menor → maior risco)
 
-**Fase 1 — `finding.sarif_raw` (item #1)**
+**Fase 1 — `finding.sarif_raw` (item #1) — 3 consumidores a ajustar, não 1**
 
 1. Corrigir `pequod/diplomat/db/tars_integration_repo.py`: trocar o `COALESCE(occurrence.raw_payload,
    f.sarif_raw, '{}')` por uma subquery correlacionada em `finding_occurrences` (mais recente por
    `observed_at`), já que o fallback em `f.sarif_raw` deixa de existir.
 2. Ajustar `pequod/diplomat/http_in/findings_handler.py` / `query_controller.get_finding` para
    buscar o payload via `finding_occurrences` (subquery/JOIN), não mais `finding.sarif_raw`.
-3. Remover o campo de `pequod/model/finding.py`, `pequod/wire/outbound/finding_response.py`.
-4. Remover as 7 referências em `pequod/diplomat/db/finding_repo.py` (INSERT/UPDATE/SELECT).
-5. Ajustar `pequod/adapter/sarif/sarif_to_finding.py` e `identifier_extractor.py` (paravam de
-   popular o campo na construção do model).
-6. Migração de schema: `ALTER TABLE finding DROP COLUMN sarif_raw` (dado histórico já replicado em
-   `finding_occurrences`, nada a migrar além de conferir integridade antes do DROP).
-7. Atualizar testes: `test_finding_occurrence.py`, `test_identifier_extractor.py`,
+3. **Ajustar `pequod/adapter/sarif/identifier_extractor.py`** (`extract_finding_identifiers`,
+   trecho `raw_payload = finding.sarif_raw ...`): parar de ler `finding.sarif_raw` e passar a
+   receber o SARIF do scan atual como parâmetro direto — ele já está disponível em memória durante
+   a ingestão (`ingest_controller.process_findings_raw`), não precisa reler do banco nem depender
+   de `finding_occurrences` já estar persistida na mesma transação.
+4. Remover o campo de `pequod/model/finding.py`, `pequod/wire/outbound/finding_response.py`.
+5. Remover as 7 referências em `pequod/diplomat/db/finding_repo.py` (INSERT/UPDATE/SELECT).
+6. Ajustar `pequod/adapter/sarif/sarif_to_finding.py` (parava de popular o campo na construção
+   do model).
+7. Migração de schema: `ALTER TABLE finding DROP COLUMN sarif_raw` (dado histórico já replicado em
+   `finding_occurrences`, nada a migrar além de conferir integridade antes do DROP). Aproveitar a
+   mesma migração para `ALTER TABLE finding_identifiers DROP COLUMN metadata` (item #4 — coluna
+   sempre vazia, sem uso real hoje).
+8. Atualizar testes: `test_finding_occurrence.py`, `test_identifier_extractor.py`,
    `test_finding_occurrence_repo.py`, e os testes de `finding_repo`/`findings_handler` existentes.
 
 **Fase 2 — `findings.raw`: Kafka → HTTP direto (item #0)**
@@ -222,7 +229,7 @@ com sequenciamento pensado para minimizar risco (menor escopo primeiro), mas a d
 | `scans` | **Absorve `quality_gate_scanner_runs`** (Fase 3): ganha `quality_gate_run_id`, `error_code`, `error_message`; passa a existir em estado "anunciado" antes do SARIF |
 | `scan_artifacts` | Mantida sem alteração |
 | `finding_occurrences` | Mantida — **vira a única fonte de verdade do payload SARIF por finding** (Fase 1) |
-| `finding_identifiers` | Mantida sem alteração — 1:N genuíno |
+| `finding_identifiers` | Mantida (tabela em si) — **perde a coluna `metadata`** (Fase 1, item #4, sempre vazia) |
 | `alerts` | Mantida sem alteração (infra de delivery não usada notada, não decidido remover) |
 | `audit_log` | Mantida sem alteração |
 | `risk_exceptions` | Mantida sem alteração — confirmada como funcionalidade distinta e ativa |
@@ -237,10 +244,10 @@ com sequenciamento pensado para minimizar risco (menor escopo primeiro), mas a d
 | `consolidated_risk_finding` | Mantida sem alteração — confirmada como **não redundante** (seleção da IA é subconjunto genuíno, não derivável) |
 
 **Saldo líquido do plano completo:** de 22 tabelas, **21 tabelas** (uma eliminada:
-`quality_gate_scanner_runs`), mais a remoção de 1 coluna redundante (`finding.sarif_raw`) e a
-troca de 1 tópico Kafka por HTTP direto. Duas tabelas (`finding_ai_analysis`,
-`finding_cluster_member`) seguem como candidatas a uma 2ª rodada de fusão, condicionadas a uma
-resposta do usuário sobre planos futuros de histórico/multiplicidade.
+`quality_gate_scanner_runs`), mais a remoção de 2 colunas redundantes/mortas (`finding.sarif_raw`,
+`finding_identifiers.metadata`) e a troca de 1 tópico Kafka por HTTP direto. Duas tabelas
+(`finding_ai_analysis`, `finding_cluster_member`) seguem como candidatas a uma 2ª rodada de fusão,
+condicionadas a uma resposta do usuário sobre planos futuros de histórico/multiplicidade.
 
 ## Fluxo de dados atual (confirmado no código)
 
@@ -341,18 +348,29 @@ SELECT raw_payload FROM finding_occurrences
 WHERE finding_id = $1 ORDER BY observed_at DESC LIMIT 1
 ```
 
-**Consumidores de `finding.sarif_raw` hoje (correção — havíamos identificado só 1, há um 2º):**
+**Consumidores de `finding.sarif_raw` hoje (correção 2 — havíamos identificado só 1, depois achamos
+um 2º, agora um 3º):**
 1. `GET /findings/{id}` (`findings_handler.py` → `query_controller.get_finding` →
    `finding_repo.get_by_id`), leitura direta sem JOIN.
 2. `pequod/diplomat/db/tars_integration_repo.py` — usa `COALESCE(occurrence.raw_payload,
    f.sarif_raw, '{}')` como **fallback** ao montar o payload enviado ao tars-ai. Já trata
    `finding_occurrences` como fonte primária (reforça que a coluna é redundante), mas precisa que
    o fallback vire subquery correlacionada em vez de simplesmente remover.
+3. **`pequod/adapter/sarif/identifier_extractor.py` (achado ao analisar `finding_identifiers`,
+   ver item #4) — lê `finding.sarif_raw.properties` diretamente** para extrair CVE/CWE/GHSA/PURL
+   que só existem nas `properties` do SARIF bruto, não nos campos já normalizados do `Finding`.
+   Esse é o consumidor mais delicado dos três: ele roda **no momento da ingestão**, antes de
+   `finding_occurrences` necessariamente já ter sido persistida na mesma transação — precisa
+   confirmar a ordem exata em `ingest_controller.py`/`persist_ingestion` antes de trocar a fonte,
+   para não ler uma tabela ainda vazia.
 
-**Proposta:** remover a coluna `finding.sarif_raw`, trocar os dois consumidores para buscar via
-`finding_occurrences` (JOIN/subquery pelo finding_id, ORDER BY observed_at DESC LIMIT 1).
+**Proposta:** remover a coluna `finding.sarif_raw`, trocar os três consumidores para buscar via
+`finding_occurrences` (JOIN/subquery pelo finding_id, ORDER BY observed_at DESC LIMIT 1) — no caso
+do extrator de identificadores (3), a alternativa mais simples é passar o SARIF bruto do scan atual
+como parâmetro direto para `extract_finding_identifiers()` (ele já está disponível em memória
+durante a ingestão, não precisa nem de leitura ao banco).
 Ganho: elimina duplicação real de um JSON potencialmente grande, e remove a inconsistência de
-"qual desses 2 lugares é a fonte de verdade" (resposta: `finding_occurrences` sempre foi).
+"qual desses lugares é a fonte de verdade" (resposta: `finding_occurrences` sempre foi).
 
 **Ainda em aberto:** decidir se implementamos agora ou se ainda dá pra achar mais casos
 parecidos antes de mexer (ver #2, tabelas intermediárias).
@@ -553,10 +571,11 @@ em múltiplos scans ao longo do tempo (aparece, some, reaparece). Cada linha é 
 scan específico, com sua própria evidência/localização. É histórico genuíno — colapsar em `finding`
 perderia a distinção entre ocorrências.
 
-**`finding_identifiers` — 1:N real, não fundível.** Um finding pode ter múltiplos identificadores
-externos simultâneos (ex: CVE-2023-1 + CVE-2023-2 + CWE-79 para o mesmo finding). Não cabe em
-colunas fixas de `finding` sem virar array/jsonb (o que perderia a capacidade de indexar/filtrar
-por identificador individual).
+**`finding_identifiers` — 1:N real, não fundível como tabela, mas com 1 coluna morta encontrada.**
+Um finding pode ter múltiplos identificadores externos simultâneos (ex: CVE-2023-1 + CVE-2023-2 +
+CWE-79 para o mesmo finding). Não cabe em colunas fixas de `finding` sem virar array/jsonb (o que
+perderia a capacidade de indexar/filtrar por identificador individual). A tabela em si fica —
+**mas ver item #4 abaixo, achado ao inspecionar o código do extrator.**
 
 **`finding_ai_analysis` — hoje é 1:1 (`UNIQUE(finding_id)`), candidata a fusão.** Cada finding tem
 no máximo uma análise de IA hoje (recomendação, prioridade, confiança, modelo) — não há histórico
@@ -578,6 +597,29 @@ a fusão em `finding` é recomendada.
 **Conclusão parcial:** `finding_occurrences` e `finding_identifiers` ficam como estão (1:N genuíno).
 `finding_ai_analysis` e `finding_cluster_member` aguardam decisão do usuário sobre planos futuros
 antes de decidir fundir ou manter.
+
+### #4 — `finding_identifiers.metadata`: coluna sempre vazia (achado ao aprofundar a tabela)
+
+**Status:** análise concluída, aguardando decisão de implementação.
+
+Ao investigar `finding_identifiers` mais a fundo (a pedido do usuário), encontramos:
+
+- `finding_identifiers.metadata jsonb NOT NULL DEFAULT '{}'::jsonb` — verificado em
+  `model/finding_identifier.py` (`metadata: dict[str, Any] = field(default_factory=dict)`) e em
+  `adapter/sarif/identifier_extractor.py` (todos os construtores de `FindingIdentifier(...)` no
+  extrator) que **nenhum caminho de código popula esse campo com dado real** — é sempre `{}`.
+  Diferente de `source`/`reference_url`, que são efetivamente usados e preenchidos.
+
+**Proposta:** remover a coluna `metadata` de `finding_identifiers` (ou, se o plano for usá-la no
+futuro para guardar contexto extra do identificador — ex: versão do PURL, campos extras do SARIF —
+manter, mas documentar a intenção). Sem uso real hoje, é overhead de schema sem benefício.
+
+**Achado adicional durante a mesma investigação (já registrado no item #1 acima):**
+`identifier_extractor.py` é o **3º consumidor** de `finding.sarif_raw` que não havíamos mapeado —
+ele lê `finding.sarif_raw.properties` para extrair identificadores que só existem no SARIF bruto.
+Isso precisa ser resolvido junto com a Fase 1 do plano de implementação (ver seção do plano acima),
+preferencialmente passando o SARIF do scan atual como parâmetro direto (já disponível em memória
+durante a ingestão) em vez de reler do banco.
 
 ## Outros itens registrados (não aprofundados ainda)
 
