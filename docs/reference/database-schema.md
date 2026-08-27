@@ -4,6 +4,60 @@ Referência das tabelas do banco relacional do Pequod. Source-of-truth em `pequo
 
 Convenção de nomenclatura: `finding_cluster`/`finding_cluster_member` representam o **agrupamento técnico bruto, pré-IA** (determinístico, por `correlation_key`). `consolidated_risk` representa o **risco já decidido** (via IA `propose_semantic_clustering` ou auto-attach determinístico), que é o que a UI (heimdall-dashboard) exibe como "Risco consolidado". Ver [decisions.md](../overview/decisions.md) para o histórico dessa distinção.
 
+## Diagrama de relacionamentos (ER)
+
+```mermaid
+erDiagram
+    applications ||--o{ finding : "application_id"
+    applications ||--o{ scans : "application_id"
+    applications ||--o{ alerts : "application_id"
+    applications ||--o{ risk_exceptions : "application_id"
+    applications ||--o{ security_gate_policies : "application_id (opcional)"
+    applications ||--o{ security_gate_evaluations : "application_id"
+    applications ||--o{ quality_gate_runs : "application_id"
+    applications ||--o{ semantic_clustering_decision : "application_id (opcional)"
+    applications ||--o{ consolidated_risk : "application_id (opcional)"
+
+    security_tools ||--o{ finding : "tool_id"
+    security_tools ||--o{ scans : "tool_id"
+
+    scans ||--o{ scan_artifacts : "scan_id"
+    scans ||--o{ finding_occurrences : "scan_id"
+    scans ||--o{ alerts : "scan_id (opcional)"
+    scans ||--o{ security_gate_evaluations : "scan_id (opcional)"
+    scans ||--o{ quality_gate_scanner_runs : "scan_id (opcional)"
+
+    finding ||--o| finding_ai_analysis : "finding_id"
+    finding ||--o{ finding_occurrences : "finding_id"
+    finding ||--o{ finding_identifiers : "finding_id"
+    finding ||--o| finding_cluster_member : "finding_id (1:1)"
+    finding ||--o{ alerts : "finding_id (opcional)"
+    finding ||--o{ risk_exceptions : "finding_id (xor cluster_id)"
+    finding ||--o{ security_gate_items : "finding_id (xor cluster_id)"
+    finding ||--o{ consolidated_risk_finding : "finding_id"
+
+    finding_cluster ||--o{ finding_cluster_member : "cluster_id"
+    finding_cluster ||--o| finding_cluster_ai_analysis : "cluster_id"
+    finding_cluster ||--o{ alerts : "cluster_id (opcional)"
+    finding_cluster ||--o{ risk_exceptions : "cluster_id (xor finding_id)"
+    finding_cluster ||--o{ security_gate_items : "cluster_id (xor finding_id)"
+    finding_cluster ||--o{ consolidated_risk_candidate : "cluster_id"
+
+    risk_exceptions ||--o{ security_gate_items : "risk_exception_id (opcional)"
+
+    security_gate_policies ||--o{ security_gate_evaluations : "policy_id"
+    security_gate_evaluations ||--o{ security_gate_items : "evaluation_id"
+    security_gate_evaluations ||--o| quality_gate_runs : "evaluation_id (opcional)"
+
+    quality_gate_runs ||--o{ quality_gate_scanner_runs : "quality_gate_run_id"
+
+    semantic_clustering_decision ||--o{ consolidated_risk : "decision_id"
+    consolidated_risk ||--o{ consolidated_risk_candidate : "risk_id"
+    consolidated_risk ||--o{ consolidated_risk_finding : "risk_id"
+```
+
+> Legenda rápida: `||--o{` = um-para-muitos (obrigatório→opcional), `||--o|` = um-para-um. FKs "opcional"/"xor" indicam colunas nullable ou constraints de exclusividade (ex: `risk_exceptions`/`security_gate_items` apontam para `finding` OU `finding_cluster`, nunca os dois).
+
 ## Vulnerabilidades canônicas e correlação
 
 ### `finding`
