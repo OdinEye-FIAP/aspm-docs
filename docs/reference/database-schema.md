@@ -6,7 +6,180 @@ Convenção de nomenclatura: `finding_cluster`/`finding_cluster_member` represen
 
 ## Diagrama (estilo dbdiagram)
 
+**Total: 22 tabelas** no schema (`finding`, `finding_ai_analysis`, `finding_cluster`, `finding_cluster_ai_analysis`, `finding_cluster_member`, `applications`, `security_tools`, `scans`, `scan_artifacts`, `finding_occurrences`, `finding_identifiers`, `alerts`, `audit_log`, `risk_exceptions`, `security_gate_policies`, `security_gate_evaluations`, `security_gate_items`, `quality_gate_runs`, `quality_gate_scanner_runs`, `semantic_clustering_decision`, `consolidated_risk`, `consolidated_risk_candidate`, `consolidated_risk_finding`).
+
 Diagramas Mermaid ER com colunas e tipos, agrupados por domínio (mesma divisão do `schema.sql`). Renderizam como caixas de tabela conectadas no GitHub e no mkdocs-material.
+
+### Visão geral (todas as 22 tabelas)
+
+Colunas reduzidas ao essencial (PK/FK + poucos campos identificadores) para caber as 22 tabelas em um único diagrama. Para o detalhe completo de colunas, veja os diagramas por domínio logo abaixo.
+
+```mermaid
+erDiagram
+    applications {
+        uuid id PK
+        text repository_full_name
+        text owner_name
+    }
+    security_tools {
+        uuid id PK
+        text slug
+        text scanner_class
+    }
+    scans {
+        uuid id PK
+        uuid application_id FK
+        uuid tool_id FK
+    }
+    scan_artifacts {
+        uuid id PK
+        uuid scan_id FK
+    }
+    finding {
+        uuid id PK
+        uuid application_id FK
+        uuid tool_id FK
+        text fingerprint
+        text scanner_class
+    }
+    finding_ai_analysis {
+        uuid id PK
+        uuid finding_id FK
+    }
+    finding_occurrences {
+        uuid id PK
+        uuid finding_id FK
+        uuid scan_id FK
+    }
+    finding_identifiers {
+        uuid id PK
+        uuid finding_id FK
+    }
+    finding_cluster {
+        uuid id PK
+        text correlation_key
+    }
+    finding_cluster_ai_analysis {
+        uuid id PK
+        uuid cluster_id FK
+    }
+    finding_cluster_member {
+        uuid id PK
+        uuid cluster_id FK
+        uuid finding_id FK
+    }
+    alerts {
+        uuid id PK
+        uuid application_id FK
+        uuid finding_id FK
+        uuid cluster_id FK
+        uuid scan_id FK
+    }
+    audit_log {
+        uuid id PK
+        uuid application_id FK
+    }
+    risk_exceptions {
+        uuid id PK
+        uuid application_id FK
+        uuid finding_id FK
+        uuid cluster_id FK
+    }
+    security_gate_policies {
+        uuid id PK
+        uuid application_id FK
+    }
+    security_gate_evaluations {
+        uuid id PK
+        uuid application_id FK
+        uuid policy_id FK
+        uuid scan_id FK
+    }
+    security_gate_items {
+        uuid id PK
+        uuid evaluation_id FK
+        uuid finding_id FK
+        uuid cluster_id FK
+        uuid risk_exception_id FK
+    }
+    quality_gate_runs {
+        uuid id PK
+        uuid application_id FK
+        uuid evaluation_id FK
+        text workflow_id
+    }
+    quality_gate_scanner_runs {
+        uuid id PK
+        uuid quality_gate_run_id FK
+        uuid scan_id FK
+    }
+    semantic_clustering_decision {
+        uuid id PK
+        uuid application_id FK
+    }
+    consolidated_risk {
+        uuid id PK
+        uuid decision_id FK
+        uuid application_id FK
+        text canonical_title
+    }
+    consolidated_risk_candidate {
+        uuid risk_id FK
+        uuid cluster_id FK
+    }
+    consolidated_risk_finding {
+        uuid risk_id FK
+        uuid finding_id FK
+    }
+
+    applications ||--o{ finding : "application_id"
+    applications ||--o{ scans : "application_id"
+    applications ||--o{ alerts : "application_id"
+    applications ||--o{ audit_log : "application_id (opcional)"
+    applications ||--o{ risk_exceptions : "application_id"
+    applications ||--o{ security_gate_policies : "application_id (opcional)"
+    applications ||--o{ security_gate_evaluations : "application_id"
+    applications ||--o{ quality_gate_runs : "application_id (opcional)"
+    applications ||--o{ semantic_clustering_decision : "application_id (opcional)"
+    applications ||--o{ consolidated_risk : "application_id (opcional)"
+
+    security_tools ||--o{ finding : "tool_id"
+    security_tools ||--o{ scans : "tool_id"
+
+    scans ||--o{ scan_artifacts : "scan_id"
+    scans ||--o{ finding_occurrences : "scan_id"
+    scans ||--o{ alerts : "scan_id (opcional)"
+    scans ||--o{ security_gate_evaluations : "scan_id (opcional)"
+    scans ||--o{ quality_gate_scanner_runs : "scan_id (opcional)"
+
+    finding ||--o| finding_ai_analysis : "finding_id"
+    finding ||--o{ finding_occurrences : "finding_id"
+    finding ||--o{ finding_identifiers : "finding_id"
+    finding ||--o| finding_cluster_member : "finding_id (1:1)"
+    finding ||--o{ alerts : "finding_id (opcional/xor)"
+    finding ||--o{ risk_exceptions : "finding_id (xor cluster_id)"
+    finding ||--o{ security_gate_items : "finding_id (xor cluster_id)"
+    finding ||--o{ consolidated_risk_finding : "finding_id"
+
+    finding_cluster ||--o{ finding_cluster_member : "cluster_id"
+    finding_cluster ||--o| finding_cluster_ai_analysis : "cluster_id"
+    finding_cluster ||--o{ alerts : "cluster_id (opcional/xor)"
+    finding_cluster ||--o{ risk_exceptions : "cluster_id (xor finding_id)"
+    finding_cluster ||--o{ security_gate_items : "cluster_id (xor finding_id)"
+    finding_cluster ||--o{ consolidated_risk_candidate : "cluster_id"
+
+    risk_exceptions ||--o{ security_gate_items : "risk_exception_id (opcional)"
+
+    security_gate_policies ||--o{ security_gate_evaluations : "policy_id"
+    security_gate_evaluations ||--o{ security_gate_items : "evaluation_id"
+    security_gate_evaluations ||--o| quality_gate_runs : "evaluation_id (opcional)"
+
+    quality_gate_runs ||--o{ quality_gate_scanner_runs : "quality_gate_run_id"
+
+    semantic_clustering_decision ||--o{ consolidated_risk : "decision_id"
+    consolidated_risk ||--o{ consolidated_risk_candidate : "risk_id"
+    consolidated_risk ||--o{ consolidated_risk_finding : "risk_id"
+```
 
 ### Findings e correlação
 
