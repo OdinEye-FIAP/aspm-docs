@@ -13,6 +13,101 @@ Ao documentar o schema (22 tabelas), percebemos vários padrões de duplicação
 e tabelas intermediárias que talvez não precisem existir da forma como estão hoje.
 Este documento existe para não perder o fio da meada enquanto discutimos item a item.
 
+## Passo a passo visual: fluxo atual vs. fluxo idealizado
+
+Combina as decisões já discutidas (#0 Kafka→HTTP, #1 sarif_raw, #2c fusão scans+scanner_runs)
+num único comparativo, passo a passo.
+
+### Fluxo atual
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CI as GitHub Actions (CI)
+    participant CH as captain-hook
+    participant PQ as pequod
+    participant MD as moby-dick
+    participant K as Kafka
+
+    CI->>CH: pull_request opened/synchronize
+    CH->>K: publica workflow.started (expected_scanners)
+    K->>PQ: consome workflow.started
+    PQ->>PQ: cria quality_gate_runs (status=running)
+
+    CI->>MD: dispara N jobs de scanner (scanner.started)
+    MD->>K: publica scanner.started (job_id)
+    K->>PQ: consome scanner.started
+    PQ->>PQ: cria quality_gate_scanner_runs (status=running, scan_id=NULL)
+
+    MD->>MD: roda scanner, gera SARIF
+    MD->>K: publica findings.raw (SARIF completo, job_id)
+    K->>PQ: consome findings.raw
+
+    PQ->>PQ: sarif_to_findings()
+    PQ->>PQ: upsert finding (sobrescreve finding.sarif_raw)
+    PQ->>PQ: insere finding_occurrences (snapshot imutável)
+    PQ->>PQ: insere scans (novo registro, sem link ainda)
+    PQ->>PQ: attach_scan_by_job_id() liga quality_gate_scanner_runs.scan_id
+
+    MD->>PQ: POST /quality-gates/{workflow_id}/evaluate (HTTP direto)
+    PQ->>PQ: avalia policy, cria security_gate_evaluations
+    PQ-->>MD: decision (pass/fail)
+```
+
+**Pontos de atrito no fluxo atual (numerados conforme os itens já discutidos):**
+
+- Passos 2-6 e 7-11 usam **Kafka** para dois tópicos (`workflow.started`, `scanner.started`,
+  `findings.raw`) — enquanto o passo 15 (avaliação do gate) já usa **HTTP direto**. Inconsistência
+  de padrão de comunicação para o mesmo par de serviços (item #0).
+- Passos 8 e 12 criam **duas linhas em duas tabelas diferentes** (`quality_gate_scanner_runs` e
+  `scans`) que descrevem o mesmo scan, ligadas só depois via `job_id` (item #2c).
+- Passo 10 sobrescreve `finding.sarif_raw`, dado que já existe (redundante) em `finding_occurrences`
+  criado no mesmo passo (item #1).
+
+### Fluxo idealizado (após as 3 decisões já discutidas)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CI as GitHub Actions (CI)
+    participant CH as captain-hook
+    participant PQ as pequod
+    participant MD as moby-dick
+
+    CI->>CH: pull_request opened/synchronize
+    CH->>PQ: POST /quality-gates (HTTP direto, expected_scanners)
+    PQ->>PQ: cria quality_gate_runs (status=running)
+
+    CI->>MD: dispara N jobs de scanner
+    MD->>PQ: POST /quality-gates/{id}/scans (HTTP direto, job_id, scanner)
+    PQ->>PQ: cria scans (status=running, quality_gate_run_id, sem SARIF ainda)
+
+    MD->>MD: roda scanner, gera SARIF
+    MD->>PQ: POST /quality-gates/{id}/scans/{job_id}/complete (HTTP direto, SARIF)
+
+    PQ->>PQ: sarif_to_findings()
+    PQ->>PQ: upsert finding (SEM sarif_raw — não existe mais essa coluna)
+    PQ->>PQ: insere finding_occurrences (única fonte de verdade do payload)
+    PQ->>PQ: atualiza a MESMA linha de scans (status=completed, dados do SARIF)
+
+    MD->>PQ: POST /quality-gates/{workflow_id}/evaluate (HTTP direto)
+    PQ->>PQ: avalia policy, cria security_gate_evaluations
+    PQ-->>MD: decision (pass/fail)
+```
+
+**O que muda, passo a passo:**
+
+| # | Fluxo atual | Fluxo idealizado |
+|---|---|---|
+| Transporte | 3 tópicos Kafka + 1 HTTP (inconsistente) | 100% HTTP direto (consistente, com retry) |
+| Registro do scan | 2 linhas (`quality_gate_scanner_runs` + `scans`), ligadas depois por `job_id` | 1 linha em `scans`, criada no anúncio e atualizada na conclusão |
+| Payload SARIF | 3 lugares (`finding.sarif_raw`, `scan_artifacts.inline_content`, `finding_occurrences.raw_payload`) | 2 lugares (`scan_artifacts.inline_content` + `finding_occurrences.raw_payload`) |
+| Consumo do resultado | pequod é *consumer* Kafka de `findings.raw` | pequod expõe endpoint HTTP; moby-dick (ou um BFF) chama diretamente |
+
+> Nota: o fluxo idealizado acima **não foi implementado** — é o desenho-alvo das decisões #0, #1
+> e #2c registradas neste documento, dependente de aprovação e planejamento de migração antes de
+> qualquer código ser alterado.
+
 ## Fluxo de dados atual (confirmado no código)
 
 ```
