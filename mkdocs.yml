@@ -93,6 +93,7 @@ nav:
       - Repositórios: overview/repos.md
   - Design:
       - ishmael — Asset Inventory: design/ishmael.md
+      - Revisão do schema (Pequod): design/schema-review.md
   - Projetos:
       - Pequod: pequod.md
       - Moby-dick: moby-dick.md
