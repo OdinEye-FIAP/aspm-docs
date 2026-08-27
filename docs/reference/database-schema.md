@@ -4,59 +4,69 @@ Referência das tabelas do banco relacional do Pequod. Source-of-truth em `pequo
 
 Convenção de nomenclatura: `finding_cluster`/`finding_cluster_member` representam o **agrupamento técnico bruto, pré-IA** (determinístico, por `correlation_key`). `consolidated_risk` representa o **risco já decidido** (via IA `propose_semantic_clustering` ou auto-attach determinístico), que é o que a UI (heimdall-dashboard) exibe como "Risco consolidado". Ver [decisions.md](../overview/decisions.md) para o histórico dessa distinção.
 
-## Diagrama de relacionamentos (ER)
+## Relacionamentos entre tabelas (FKs)
 
-```mermaid
-erDiagram
-    applications ||--o{ finding : "application_id"
-    applications ||--o{ scans : "application_id"
-    applications ||--o{ alerts : "application_id"
-    applications ||--o{ risk_exceptions : "application_id"
-    applications ||--o{ security_gate_policies : "application_id (opcional)"
-    applications ||--o{ security_gate_evaluations : "application_id"
-    applications ||--o{ quality_gate_runs : "application_id"
-    applications ||--o{ semantic_clustering_decision : "application_id (opcional)"
-    applications ||--o{ consolidated_risk : "application_id (opcional)"
+Tabela de referência com toda foreign key do schema: tabela de origem, coluna, tabela/coluna referenciada, cardinalidade e comportamento de delete.
 
-    security_tools ||--o{ finding : "tool_id"
-    security_tools ||--o{ scans : "tool_id"
+| Tabela de origem | Coluna FK | Referencia | Cardinalidade | ON DELETE | Observação |
+|---|---|---|---|---|---|
+| `finding` | `application_id` | `applications.id` | N:1 | RESTRICT | |
+| `finding` | `tool_id` | `security_tools.id` | N:1 | RESTRICT | |
+| `finding_ai_analysis` | `finding_id` | `finding.id` | 1:1 | CASCADE | `finding_id` é UNIQUE |
+| `finding_cluster_ai_analysis` | `cluster_id` | `finding_cluster.id` | 1:1 | CASCADE | `cluster_id` é UNIQUE |
+| `finding_cluster_member` | `cluster_id` | `finding_cluster.id` | N:1 | CASCADE | |
+| `finding_cluster_member` | `finding_id` | `finding.id` | 1:1 | CASCADE | `finding_id` é UNIQUE (finding pertence a no máx. 1 cluster) |
+| `scans` | `application_id` | `applications.id` | N:1 | RESTRICT | |
+| `scans` | `tool_id` | `security_tools.id` | N:1 | RESTRICT | |
+| `scan_artifacts` | `scan_id` | `scans.id` | N:1 | CASCADE | |
+| `finding_occurrences` | `finding_id` | `finding.id` | N:1 | CASCADE | |
+| `finding_occurrences` | `scan_id` | `scans.id` | N:1 | CASCADE | par `(finding_id, scan_id)` é UNIQUE |
+| `finding_identifiers` | `finding_id` | `finding.id` | N:1 | CASCADE | |
+| `alerts` | `application_id` | `applications.id` | N:1 | RESTRICT | |
+| `alerts` | `finding_id` | `finding.id` | N:1 (opcional) | SET NULL | nullable |
+| `alerts` | `cluster_id` | `finding_cluster.id` | N:1 (opcional) | SET NULL | nullable |
+| `alerts` | `scan_id` | `scans.id` | N:1 (opcional) | SET NULL | nullable |
+| `audit_log` | `application_id` | `applications.id` | N:1 (opcional) | SET NULL | nullable |
+| `risk_exceptions` | `application_id` | `applications.id` | N:1 | RESTRICT | |
+| `risk_exceptions` | `finding_id` | `finding.id` | N:1 (xor) | CASCADE | exatamente um entre `finding_id`/`cluster_id` |
+| `risk_exceptions` | `cluster_id` | `finding_cluster.id` | N:1 (xor) | CASCADE | exatamente um entre `finding_id`/`cluster_id` |
+| `security_gate_policies` | `application_id` | `applications.id` | N:1 (opcional) | CASCADE | nullable (policy global se NULL) |
+| `security_gate_evaluations` | `application_id` | `applications.id` | N:1 | RESTRICT | |
+| `security_gate_evaluations` | `policy_id` | `security_gate_policies.id` | N:1 | RESTRICT | |
+| `security_gate_evaluations` | `scan_id` | `scans.id` | N:1 (opcional) | SET NULL | nullable |
+| `security_gate_items` | `evaluation_id` | `security_gate_evaluations.id` | N:1 | CASCADE | |
+| `security_gate_items` | `finding_id` | `finding.id` | N:1 (xor/opcional) | SET NULL | no máx. um entre `finding_id`/`cluster_id`; pode ser `aggregate`/`system` (nenhum) |
+| `security_gate_items` | `cluster_id` | `finding_cluster.id` | N:1 (xor/opcional) | SET NULL | idem acima |
+| `security_gate_items` | `risk_exception_id` | `risk_exceptions.id` | N:1 (opcional) | SET NULL | nullable |
+| `quality_gate_runs` | `application_id` | `applications.id` | N:1 (opcional) | RESTRICT | nullable |
+| `quality_gate_runs` | `evaluation_id` | `security_gate_evaluations.id` | N:1 (opcional) | SET NULL | nullable |
+| `quality_gate_scanner_runs` | `quality_gate_run_id` | `quality_gate_runs.id` | N:1 | CASCADE | |
+| `quality_gate_scanner_runs` | `scan_id` | `scans.id` | N:1 (opcional) | SET NULL | nullable |
+| `semantic_clustering_decision` | `application_id` | `applications.id` | N:1 (opcional) | SET NULL | nullable |
+| `consolidated_risk` | `decision_id` | `semantic_clustering_decision.id` | N:1 | CASCADE | |
+| `consolidated_risk` | `application_id` | `applications.id` | N:1 (opcional) | SET NULL | nullable |
+| `consolidated_risk_candidate` | `risk_id` | `consolidated_risk.id` | N:1 | CASCADE | PK composta `(risk_id, cluster_id)` |
+| `consolidated_risk_candidate` | `cluster_id` | `finding_cluster.id` | N:1 | CASCADE | PK composta `(risk_id, cluster_id)` |
+| `consolidated_risk_finding` | `risk_id` | `consolidated_risk.id` | N:1 | CASCADE | PK composta `(risk_id, finding_id)` |
+| `consolidated_risk_finding` | `finding_id` | `finding.id` | N:1 | CASCADE | PK composta `(risk_id, finding_id)` |
 
-    scans ||--o{ scan_artifacts : "scan_id"
-    scans ||--o{ finding_occurrences : "scan_id"
-    scans ||--o{ alerts : "scan_id (opcional)"
-    scans ||--o{ security_gate_evaluations : "scan_id (opcional)"
-    scans ||--o{ quality_gate_scanner_runs : "scan_id (opcional)"
+### Por tabela "pai" (quem referencia quem)
 
-    finding ||--o| finding_ai_analysis : "finding_id"
-    finding ||--o{ finding_occurrences : "finding_id"
-    finding ||--o{ finding_identifiers : "finding_id"
-    finding ||--o| finding_cluster_member : "finding_id (1:1)"
-    finding ||--o{ alerts : "finding_id (opcional)"
-    finding ||--o{ risk_exceptions : "finding_id (xor cluster_id)"
-    finding ||--o{ security_gate_items : "finding_id (xor cluster_id)"
-    finding ||--o{ consolidated_risk_finding : "finding_id"
+| Tabela | Referenciada por |
+|---|---|
+| `applications` | `finding`, `scans`, `alerts`, `risk_exceptions`, `security_gate_policies`, `security_gate_evaluations`, `quality_gate_runs`, `semantic_clustering_decision`, `consolidated_risk` |
+| `security_tools` | `finding`, `scans` |
+| `scans` | `scan_artifacts`, `finding_occurrences`, `alerts`, `security_gate_evaluations`, `quality_gate_scanner_runs` |
+| `finding` | `finding_ai_analysis`, `finding_occurrences`, `finding_identifiers`, `finding_cluster_member`, `alerts`, `risk_exceptions`, `security_gate_items`, `consolidated_risk_finding` |
+| `finding_cluster` | `finding_cluster_member`, `finding_cluster_ai_analysis`, `alerts`, `risk_exceptions`, `security_gate_items`, `consolidated_risk_candidate` |
+| `risk_exceptions` | `security_gate_items` |
+| `security_gate_policies` | `security_gate_evaluations` |
+| `security_gate_evaluations` | `security_gate_items`, `quality_gate_runs` |
+| `quality_gate_runs` | `quality_gate_scanner_runs` |
+| `semantic_clustering_decision` | `consolidated_risk` |
+| `consolidated_risk` | `consolidated_risk_candidate`, `consolidated_risk_finding` |
 
-    finding_cluster ||--o{ finding_cluster_member : "cluster_id"
-    finding_cluster ||--o| finding_cluster_ai_analysis : "cluster_id"
-    finding_cluster ||--o{ alerts : "cluster_id (opcional)"
-    finding_cluster ||--o{ risk_exceptions : "cluster_id (xor finding_id)"
-    finding_cluster ||--o{ security_gate_items : "cluster_id (xor finding_id)"
-    finding_cluster ||--o{ consolidated_risk_candidate : "cluster_id"
-
-    risk_exceptions ||--o{ security_gate_items : "risk_exception_id (opcional)"
-
-    security_gate_policies ||--o{ security_gate_evaluations : "policy_id"
-    security_gate_evaluations ||--o{ security_gate_items : "evaluation_id"
-    security_gate_evaluations ||--o| quality_gate_runs : "evaluation_id (opcional)"
-
-    quality_gate_runs ||--o{ quality_gate_scanner_runs : "quality_gate_run_id"
-
-    semantic_clustering_decision ||--o{ consolidated_risk : "decision_id"
-    consolidated_risk ||--o{ consolidated_risk_candidate : "risk_id"
-    consolidated_risk ||--o{ consolidated_risk_finding : "risk_id"
-```
-
-> Legenda rápida: `||--o{` = um-para-muitos (obrigatório→opcional), `||--o|` = um-para-um. FKs "opcional"/"xor" indicam colunas nullable ou constraints de exclusividade (ex: `risk_exceptions`/`security_gate_items` apontam para `finding` OU `finding_cluster`, nunca os dois).
+> `finding` e `finding_cluster` nunca são referenciados juntos pela mesma linha em `risk_exceptions`/`security_gate_items` (constraint de exclusividade — "xor" na tabela acima).
 
 ## Vulnerabilidades canônicas e correlação
 
