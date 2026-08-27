@@ -51,6 +51,47 @@ Confirmações da conversa:
 
 ## Itens em discussão
 
+### #0 — `findings.raw` via Kafka vs. HTTP direto (moby-dick → pequod)
+
+**Status:** discussão concluída, recomendação registrada — não implementado.
+
+O usuário questionou por que `findings.raw` (moby-dick → pequod) usa Kafka, já que moby-dick já é
+um serviço assíncrono e o próprio momento de publicação (fim do scan) não parece exigir uma fila.
+Reforça o ponto o fato de já existir, hoje, comunicação **HTTP direta** entre os dois serviços para
+outra finalidade: `moby-dick/diplomat/http_out/pequod_client.py` chama
+`POST /api/v1/internal/quality-gates/{workflow_id}/evaluate` no pequod diretamente, sem Kafka.
+
+**Motivos originalmente documentados para Kafka (`decisions.md` §12/§14):**
+
+1. Desacoplamento de disponibilidade — se o pequod estiver fora do ar, o Kafka retém a mensagem.
+2. Fan-out futuro — outros consumidores do mesmo tópico (ex: auditoria, data lake) sem o moby-dick
+   precisar saber quem mais consome.
+3. Backpressure — picos de scans terminando ao mesmo tempo são absorvidos pela fila.
+
+**Por que esses motivos não se sustentam hoje, segundo a análise:**
+
+- **Fan-out (2):** hoje existe exatamente **1 consumidor real** de `findings.raw` — o próprio
+  pequod. É especulativo, não uma necessidade atual.
+- **Backpressure (3):** o pequod já é FastAPI (assíncrono nativo) com pool de conexões `asyncpg` —
+  a concorrência já é absorvida pelo próprio serviço, sem precisar de fila externa como buffer.
+- **Disponibilidade (1):** resolvido de forma equivalente com HTTP + retry/backoff — mecanismo que
+  **já existe** no `pequod_client.py` para o outro endpoint (`evaluate_quality_gate`). A única
+  lacuna real é: se o **moby-dick** cair no meio do retry, a mensagem em memória se perde (o Kafka
+  não teria esse problema, pois a mensagem já estaria persistida no broker antes do consumo).
+
+**Conclusão / recomendação:** trocar `findings.raw` de Kafka para uma chamada HTTP direta
+moby-dick → pequod (ou via um BFF dedicado, se a plataforma evoluir para múltiplos
+consumidores/serviços de borda), com retry/backoff no client — no mesmo padrão já usado para
+`evaluate_quality_gate`. Isso simplifica a infraestrutura (menos um tópico Kafka + menos um
+consumer a operar) sem perda de garantias relevantes ao estado atual do sistema. Se, no futuro,
+surgir necessidade real de múltiplos consumidores do resultado do scan, o Kafka pode voltar a
+fazer sentido nesse ponto específico — mas isso deve ser decidido quando/se essa necessidade
+aparecer, não antecipado hoje.
+
+**Risco residual aceito:** perda da mensagem se moby-dick cair durante o retry (sem persistência
+teimosa própria). Mitigável com uma fila leve (outbox/BFF) se o usuário quiser essa garantia sem
+reintroduzir Kafka.
+
 ### #1 — Triplicação do payload SARIF (`finding.sarif_raw` / `scan_artifacts.inline_content` / `finding_occurrences.raw_payload`)
 
 **Status:** análise concluída, aguardando decisão de implementação.
@@ -265,6 +306,44 @@ Scan = scans (1 execução real de 1 scanner sobre 1 ref, SÓ existe quando o SA
 
 > Nota: este diagrama reflete o estado **atual** (duas tabelas separadas). O desenho proposto em
 > #2c fundiria `quality_gate_scanner_runs` para dentro de `scans` — ver seção acima.
+
+### #3 — Tabelas satélite de `finding` (finding_occurrences / finding_identifiers / finding_ai_analysis / finding_cluster_member): todas precisam ser tabelas separadas?
+
+**Status:** análise concluída para 2 das 4; outras 2 têm decisão pendente do usuário.
+
+O usuário questionou por que existem 4 tabelas satélite de `finding` ao invés de campos na própria
+tabela. A resposta varia por tabela — duas são genuinamente 1:N, duas são hoje 1:1 (`UNIQUE(finding_id)`).
+
+**`finding_occurrences` — 1:N real, não fundível.** Um finding (por fingerprint) pode ser detectado
+em múltiplos scans ao longo do tempo (aparece, some, reaparece). Cada linha é uma detecção em um
+scan específico, com sua própria evidência/localização. É histórico genuíno — colapsar em `finding`
+perderia a distinção entre ocorrências.
+
+**`finding_identifiers` — 1:N real, não fundível.** Um finding pode ter múltiplos identificadores
+externos simultâneos (ex: CVE-2023-1 + CVE-2023-2 + CWE-79 para o mesmo finding). Não cabe em
+colunas fixas de `finding` sem virar array/jsonb (o que perderia a capacidade de indexar/filtrar
+por identificador individual).
+
+**`finding_ai_analysis` — hoje é 1:1 (`UNIQUE(finding_id)`), candidata a fusão.** Cada finding tem
+no máximo uma análise de IA hoje (recomendação, prioridade, confiança, modelo) — não há histórico
+de reanálises, é sobrescrita. Se essa regra for permanente, faz mais sentido como colunas nullable
+dentro de `finding` (`ai_recommendation`, `ai_priority`, `ai_confidence`, `ai_model_name`),
+eliminando um JOIN em toda consulta que precisa da análise.
+
+**`finding_cluster_member` — hoje é 1:1 (`UNIQUE(finding_id)`), candidata a fusão.** Apesar do nome
+sugerir tabela de associação N:N, a constraint `UNIQUE(finding_id)` (não apenas `UNIQUE(cluster_id,
+finding_id)`) mostra que, na prática, cada finding pertence a no máximo 1 cluster hoje. Se essa
+regra for permanente, poderia virar `finding.cluster_id` (FK nullable), eliminando a tabela inteira.
+
+**Pergunta em aberto (usuário optou por não responder ainda):** existe plano de, no futuro, um
+finding ter mais de uma análise de IA (histórico de reanálises) ou pertencer a mais de um cluster
+simultaneamente (ex: clusterização por critérios diferentes rodando em paralelo)? Se sim, manter as
+tabelas separadas como estão evita uma migração dolorosa depois. Se não (regra 1:1 é definitiva),
+a fusão em `finding` é recomendada.
+
+**Conclusão parcial:** `finding_occurrences` e `finding_identifiers` ficam como estão (1:N genuíno).
+`finding_ai_analysis` e `finding_cluster_member` aguardam decisão do usuário sobre planos futuros
+antes de decidir fundir ou manter.
 
 ## Outros itens registrados (não aprofundados ainda)
 
