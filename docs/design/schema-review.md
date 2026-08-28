@@ -646,11 +646,13 @@ durante a ingestão) em vez de reler do banco.
 - `quality_gate_runs.decision` duplica `security_gate_evaluations.decision` (mesmo padrão acima).
   `repository_id`/`repository_full_name`/`installation_id` em `quality_gate_runs` podem ser
   um snapshot histórico intencional (o repo pode ser renomeado depois) — avaliar antes de mexer.
-- `alerts`: tem infraestrutura de delivery/retry (`delivery_channel`, `destination`, `attempts`,
+- `alerts`: a infraestrutura de delivery/retry (`delivery_channel`, `destination`, `attempts`,
   `max_attempts`, `next_retry_at`, `last_error`, `sent_at` + funções `create_or_update_alert`,
-  `claim_alerts_for_delivery`, `mark_alert_sent`, `mark_alert_failed`) nunca chamada em produção
-  fora de testes — o único caminho real de escrita é o específico de falha de Quality Gate
-  (`upsert_active_alert_on_connection`, chamado direto por `security_gate_controller.py`).
+  `claim_alerts_for_delivery`, `mark_alert_sent`, `mark_alert_failed`) que nunca era chamada em
+  produção foi **removida** (código morto). O único caminho real de escrita continua sendo o
+  específico de falha de Quality Gate (`upsert_active_alert_on_connection`, chamado direto por
+  `security_gate_controller.py`), que cria/atualiza um alerta ativo e o resolve automaticamente
+  quando o problema deixa de existir — sem ciclo de entrega nem reconhecimento manual.
 - `applications.business_criticality`/`exposure`/`team_name`: persistidos e expostos via API,
   mas nunca lidos por nenhuma regra de negócio/policy hoje — campos decorativos.
 

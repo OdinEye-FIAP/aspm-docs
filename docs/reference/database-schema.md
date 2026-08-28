@@ -573,7 +573,7 @@ Identificadores externos associados a um finding (ex: CVE, CWE). Colunas: `findi
 ## Governança operacional
 
 ### `alerts`
-Notificação (ex: Slack/webhook) gerada para um finding/cluster/scan. Colunas: `application_id`, `finding_id`/`cluster_id`/`scan_id` (nullable), `alert_type`, `severity`, `title`/`message`, `status` (`pending`→`sent`/`failed`/`acknowledged`/`resolved`/...), `delivery_channel`/`destination`, `deduplication_key`, `attempts`/`max_attempts`/`next_retry_at`.
+Alerta operacional gerado para um finding/cluster/scan (ex.: falha de Quality Gate). Colunas: `application_id`, `finding_id`/`cluster_id`/`scan_id` (nullable), `alert_type`, `severity`, `title`/`message`, `deduplication_key`, `payload` (jsonb), `resolved_at` (nulo enquanto ativo). Não há mais ciclo de entrega/retentativa nem reconhecimento manual: o alerta fica ativo até ser resolvido automaticamente pelo próprio sistema quando o problema que o originou deixa de existir (ex.: Quality Gate volta a aprovar o mesmo PR).
 
 ### `audit_log`
 Log de auditoria append-only (triggers bloqueiam UPDATE/DELETE). Colunas: `application_id`, `entity_type`/`entity_id`, `action`, `actor_type`/`actor_id`/`actor_name`, `previous_data`/`new_data` (jsonb), `correlation_id`/`request_id`.
