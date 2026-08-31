@@ -196,6 +196,77 @@ coletados do GitHub/registro mas sem consumidor funcional. Avaliar se faz
 sentido manter (dado para futuro uso em policies por criticidade) ou
 remover até haver caso de uso real.
 
+## Sair do gate PR — discussão em andamento
+
+> Discussão iniciada em 2026-08-31 sobre expandir o ecossistema para além do
+> gate no PR: scan contínuo na main, remediation proativa (PRs automáticos de
+> upgrade/fix), e Quality Gate atrelado a branch (não só a PR). Registro
+> abaixo separa o que já ficou decidido nesta rodada do que ainda está em
+> aberto para próximas conversas.
+
+### Decisões fechadas nesta discussão
+
+- **Sonar Community + `sonar-db` ficam.** `sonar-db` = cache stateful
+  sacrificável (não é fonte de verdade). Sem backup, `docker volume rm` sem
+  cerimônia. Referência: DECISIONS §2/§3.
+- **`pequod` = source-of-truth.** Sonar é worker descartável. UI Sonar vira
+  utilitário, não workflow principal. Dev consome check_run (PR) + heimdall
+  (visão geral).
+- **Substituir Sonar por Semgrep está fora de escopo.** Ecossistema já roda
+  4 scanners (Sonar, Semgrep, Trivy, ZAP) cobrindo dimensões distintas
+  (SAST/SAST/SCA+secrets+IaC/DAST). Semgrep complementa Sonar, não substitui.
+- **MinIO adiado.** Dev reseta `pequod` DB frequente durante MVP, então
+  crescimento de `sarif_raw` é tolerado. Quando reset deixar de ser opção
+  (ex.: pós-MVP com histórico importando), subir MinIO no compose (~1-2
+  dias de trabalho — schema `sarif_uri`, adapter `sarif_store.py`, sem
+  backfill se histórico já foi resetado).
+- **Sonar Community é suficiente** — não vale upgrade para Developer Edition
+  ($$). PR decoration bonito do Sonar UI não é requisito (check_run do
+  `moby-dick` cobre); limite de 1 branch por projeto no Community é
+  irrelevante porque `pequod` discrimina por `ref`.
+
+### Em aberto (próximas discussões)
+
+- **Contrato `scope: pr|branch`** em `JobContext` + `QualityGateEvent`
+  (aditivo, default `pr` para compat). Deve permitir mesmo pipeline rodar
+  como gate no PR OU como baseline em branch, com sinks diferentes.
+- **Quality Gate por branch = "Security Baseline".** Nome distinto para
+  reforçar que na `main` NÃO é gate literal (não bloqueia merge — não tem
+  merge). É monitor/alarm: reabre Issue no repo, cria check_run em commit,
+  publica evento de regressão para consumers.
+- **`ahab`** — novo serviço scheduler (APScheduler ou equivalente) que
+  itera repos registrados e dispara baseline periódico via
+  `jobs.orchestration` com `context.trigger=main_baseline`. Também consumer
+  potencial de `finding.created` para trigger de remediation.
+- **Remediation bot** — quem abre PR de upgrade de lib / autofix SAST?
+  Opções: (a) Renovate self-hosted para SCA, (b) autoral no `ahab` para
+  SAST autofix via SARIF `fixes`, (c) híbrido.
+- **Sink de main scan** — check_run em commit (feio mas funciona), Issue no
+  repo alvo agrupando findings críticos, notification externa? Provável:
+  Issue no repo + evento Kafka `baseline.regressed` para consumers
+  decidirem.
+- **IA no PR body** — TARS produz summary/impact/recommendation. Colocar no
+  corpo do PR ou manter body objetivo (CVE + versão) + link para heimdall?
+  Risco: hallucination visível quando IA erra.
+- **Rate limit do remediation bot** — default proposto: máximo N PRs
+  abertos simultâneos por repo, batch semanal de deps, dedup por
+  `(rule_id, file, fix_hash)`.
+- **`sonar.dbcleaner.weeksBeforeDeletingAllSnapshots=4`** — aplicar agora
+  ou adiar? Se dev já reseta `pequod`, provavelmente também reseta
+  `sonar-db` no mesmo ciclo; retention agressiva pode ser aplicada quando
+  reset deixar de ser opção.
+
+### Escopo consciente que fica de fora nesta rodada
+
+- **Storage retention estratégico** — só volta quando MinIO subir.
+- **SBOM ingest** — Trivy emite CycloneDX; ingest formal fica para depois
+  do baseline por branch estabilizar.
+- **Policy engine** — regras `severity × repo_tier × scanner_class`
+  ficam para pós-MVP.
+- **Cross-scanner dedup semântico** — item #41 do backlog cobre isso.
+
+---
+
 ## Ideias futuras (não validadas — não iniciar sem confirmação explícita)
 
 ### Página de Organizações
