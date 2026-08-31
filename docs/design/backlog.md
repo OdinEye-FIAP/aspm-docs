@@ -256,6 +256,42 @@ remover até haver caso de uso real.
   `sonar-db` no mesmo ciclo; retention agressiva pode ser aplicada quando
   reset deixar de ser opção.
 
+### Consolidacao de contexto Git em servico dedicado — adiado, nao iniciar sem novo pedido
+
+Ideia levantada durante esta discussao: extrair para um servico proprio toda
+responsabilidade que hoje **fala com github.com** — hoje espalhada entre
+moby-dick (mint installation token da GitHub App, `create_check_run` /
+`update_check_run`) e futuros consumidores (`ahab` para trigger de baseline
+na main, remediation bot para abrir PRs automaticos).
+
+Motivacao: se `ahab` e remediation nascerem sem consolidar, cada um vai
+duplicar auth logic, cache de token, e a chave privada da GitHub App vai
+morar em N lugares (piora superficie de exposicao + rotacao/auditoria).
+
+**Escopo tentativo** (mais conservador): novo servico cuida apenas de
+    - mint + cache de installation token,
+    - abstracao HTTP para chamadas GitHub API (check_run, PR, comment, issue,
+      label),
+    - rate limit centralizado (GitHub App tem 5k reqs/h por installation),
+    - observabilidade das chamadas.
+
+**Fora deste escopo** — cada um continua no dono natural:
+    - clone/checkout continua nos scanners (nao faz sentido centralizar),
+    - scheduler fica em `ahab`,
+    - logica de "quando abrir PR" fica no remediation bot,
+    - lifecycle do container fica no moby-dick.
+
+**Fase 1 sugerida** (curto prazo, sem impacto funcional): criar servico
+copiando codigo do moby-dick, moby-dick vira cliente. Chave privada
+migra. Deploy separado.
+
+**Fase 2 / 3:** `ahab` e remediation ja nascem clientes do servico novo,
+sem duplicacao.
+
+**Status:** anotado, aguardando decisao explicita para retomar. Nao
+comecar sem novo pedido. Escopo/timing/nome ficam para quando retomarmos
+(candidatos de nome discutidos: `queequeg`, `starbuck`).
+
 ### Escopo consciente que fica de fora nesta rodada
 
 - **Storage retention estratégico** — só volta quando MinIO subir.
