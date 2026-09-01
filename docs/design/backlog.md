@@ -256,6 +256,61 @@ remover até haver caso de uso real.
   `sonar-db` no mesmo ciclo; retention agressiva pode ser aplicada quando
   reset deixar de ser opção.
 
+### #52 — Heimdall: aba "Quality gate runs" nao discrimina scope=branch de scope=pr
+
+Levantado em 2026-09-01 apos primeiro push direto na `main` de repo de
+teste. Heimdall lista o run scope=branch (Security Baseline) na mesma
+tabela dos runs scope=pr, sem coluna/badge de discriminacao. Como o run
+scope=branch nao tem `pull_request_number`, a linha aparece como se fosse
+"um PR fantasma" — confuso pro dev.
+
+**Sintoma observado:** aba "Quality gate runs" no heimdall exibe commit
+direto na main como se fosse PR run.
+
+**Contexto tecnico:** o pequod ja persiste `scope` e `branch_name` na
+tabela `quality_gate_runs` (schema atualizado no PR#50). O que falta e
+o front expor esses campos: badge "Baseline" vs "PR", coluna
+`branch_name` visivel, filtro por scope.
+
+**Escopo minimo:**
+- Coluna extra na tabela de runs no heimdall — mostrar `branch_name`
+  quando `scope=branch`, mostrar `#PR` quando `scope=pr`.
+- Badge visual (ex.: cor diferente) discriminando os dois tipos.
+- Filtro opcional por scope na tela.
+
+**Nao iniciar sem novo pedido.** Aguardando priorizacao junto com
+outros itens de front (#38/#39/#40).
+
+### #53 — Scan inicial automatico ao registrar repositorio no GitHub App
+
+Levantado em 2026-09-01. Hoje o Security Baseline scope=branch so dispara
+em `push` na default branch. Isso significa que:
+- Repo recem-instalado no GitHub App **so vai ter baseline apos o
+  proximo push** — pode demorar dias em repos maduros com merges
+  pouco frequentes.
+- Repos legado que instalam o app "hoje" ficam invisiveis ate alguem
+  mexer no codigo.
+
+**Proposta:** ao instalar o GitHub App (webhook `installation.created`
+ou `installation_repositories.added`), captain-hook dispara
+automaticamente um baseline inicial na default branch — reusa exatamente
+o mesmo pipeline scope=branch que hoje dispara em push.
+
+**Depende de** (ou anda junto com) — **Scaffold PR** discutido em
+paralelo: quando o app e instalado num repo, alem do baseline inicial,
+abrir um PR de scaffold com arquivos de configuracao esperados pelo
+ecossistema (ex.: `.aspm.yml`, workflows GitHub Actions se aplicavel,
+issue templates com label `aspm-risk`). O baseline inicial e o PR
+scaffold sao os dois "hello-world" que o repo recebe ao entrar no
+ecossistema.
+
+**Bonus:** trigger manual via heimdall (botao "Rodar baseline agora")
+resolve o mesmo problema para repos que ja estao instalados mas sem
+baseline vigente — util em recovery de reset de DB.
+
+**Nao iniciar sem novo pedido.** Requer alinhamento previo sobre o
+que exatamente vai no Scaffold PR.
+
 ### Consolidacao de contexto Git em servico dedicado — adiado, nao iniciar sem novo pedido
 
 Ideia levantada durante esta discussao: extrair para um servico proprio toda
