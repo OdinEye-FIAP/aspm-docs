@@ -8,6 +8,35 @@
 
 ## Bugs ativos
 
+### #54 — Quality Gate Timeout Worker entra em loop infinito quando policy ausente
+**Repo:** pequod · **Área:** `controller/quality_gate_timeout_worker.py` / `quality_gate_controller.py` / `quality_gate_security_controller.py`
+
+Observado em 2026-09-01: merge na main, scanner nao completou, gate ficou
+expirado. `quality_gate_timeout_worker` (ciclo ~15s) tenta finalizar via
+`expire_due_quality_gates` → `_finalize_locked` → `evaluate_quality_gate_security`.
+Como `security_gate_policies` estava vazia (perdida em reset de DB), a
+funcao levanta `ValueError("nenhuma política ativa foi encontrada para o
+Quality Gate")`. Excecao aborta a transacao, run NUNCA vira terminal,
+proximo ciclo pega a MESMA run vencida, repete o erro — loop de log
+infinito, `pequod.log` cresce sem parar.
+
+**Root cause:** `security_gate_evaluations.policy_id` é `NOT NULL` (FK
+pra `security_gate_policies`), e TODO caminho de finalizacao —inclusive
+timeout/erro operacional, que nao é uma decisao de negocio sob rubrica—
+passa por `evaluate_quality_gate_security`, que exige policy resolvida.
+
+**Acoplamento identificado (discussao em andamento, ver secao "Sair do
+gate PR"):** a tabela `security_gate_evaluations` mistura dois conceitos:
+julgamento sob policy (decisao real de negocio) e falha operacional
+(scanner quebrou, nada foi avaliado). Forcar (2) a depender de (1) é
+category error e gera o loop.
+
+**Nao iniciar fix sem novo pedido — pausado para discussao de fluxo
+completo do ecossistema (ver secao abaixo).** Opcoes levantadas variam de
+workaround rapido (seed de policy default + circuit breaker no worker)
+a refactor de modelo (tabela separada para erro operacional, dissociada
+de policy).
+
 ### #49 — Select de branch na Governance ainda exibe ID/SHA em produção
 **Repo:** heimdall-dashboard · **Área:** `GovernanceWorkspace.tsx` / `BranchSelector.tsx`
 
