@@ -50,10 +50,10 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 - **Risk Exceptions** — decisão de governança (`false_positive`/`accepted_risk`/`suppressed`) sobre um finding ou cluster.
 - **Security Gate** — políticas versionadas (por aplicação ou globais), avaliadas contra findings/clusters de um scan.
-- **Quality Gate** — orquestrado pelo pequod via endpoint síncrono chamado pelo moby-dick a cada scanner concluído (`POST /internal/quality-gates/{workflow_id}/evaluate`), com suporte a `scope=pr` (padrão) **e** `scope=branch` (Security Baseline — avaliação contínua da default branch, ver §15).
+- **Quality Gate** — orquestrado pelo pequod via endpoint síncrono chamado pelo moby-dick a cada scanner concluído (`POST /internal/quality-gates/{workflow_id}/evaluate`). O schema do pequod já suporta `scope=pr` (padrão) **e** `scope=branch` (Security Baseline), mas hoje só `scope=pr` é de fato exercitado em produção — ver §15 para o porquê.
 - **Candidate Clustering** — agrupamento determinístico de findings correlacionados, antes de qualquer decisão semântica.
 - **Consolidated Risk** — a unidade de risco "canônica" exibida no heimdall-dashboard, resultado de decisão de IA do TARS (`merge`/`keep`/`split`) ou auto-attach determinístico.
-- API REST com ~25 rotas (organizations, applications, scans, risk-exceptions, alerts, audit-logs, security-gate, consolidated-risks, quality-gates, integrações tars/moby-dick).
+- API REST com **38 rotas reais** (contadas 2026-09-10: 5 top-level incluindo `/findings*` legado, 22 em `/api/v1/*`, 3 em quality-gates, 7 em `/integrations/tars/*`, 1 em `/internal/quality-gates/*`). Uma versão anterior desta página citava "~25 rotas" — contagem manual imprecisa, corrigida.
 
 **Ainda adiado consciente:**
 - Reachability analysis e fix suggestions automáticos (a triagem do TARS cobre recomendação/prioridade, não geração de patch)
@@ -82,8 +82,8 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 **Confirmado no código (`moby-dick/deploy/sonar-runner/entrypoint.sh`):** SonarQube Community Build **não suporta** `sonar.pullrequest.*`/`sonar.branch.*` (features pagas, Developer Edition+). O entrypoint só adiciona essas flags se `SONAR_PR_MODE=enabled` for setado explicitamente (kill switch operacional, não é o default).
 
-!!! warning "Isto contradiz uma afirmação antiga no `DECISIONS.md` do captain-hook"
-    O `DECISIONS.md` na raiz do monorepo (`captain-hook`/`moby-dick`/etc.) tem uma seção que descreve PR decoration (`sonar.pullrequest.key/branch/base`) como comportamento vigente. O código real (este entrypoint) mostra que isso está desligado por padrão desde que o Community Build se mostrou incompatível com PR mode. Sinalizado para correção cruzada.
+!!! warning "Isto contradizia uma afirmação antiga no `DECISIONS.md` do captain-hook"
+    O `DECISIONS.md` que existia na raiz do monorepo local (removido em 10/set/2026 por redundância com esta página) tinha uma seção que descrevia PR decoration (`sonar.pullrequest.key/branch/base`) como comportamento vigente. O código real (este entrypoint) mostrava que isso estava desligado por padrão — a inconsistência foi corrigida na raiz antes da remoção do arquivo.
 
 **Trade-off aceito:**
 - ❌ Sem isolamento entre PRs no Sonar UI (último scan ganha)
@@ -142,16 +142,26 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
-## 15. Quality Gate com `scope=pr` e `scope=branch` (Security Baseline) — nova
+## 15. Quality Gate com `scope=pr` e `scope=branch` (Security Baseline) — status real: SÓ NO PEQUOD (corrigido 2026-09-10)
 
-**Decisão:** todo `quality_gate_runs` no pequod tem um `scope`: `pr` (padrão, exige `pull_request_number`) ou `branch` (Security Baseline — avaliação contínua da default branch, exige `branch_name`). Os dois campos são mutuamente exclusivos por constraint no banco.
+!!! danger "Correção importante — versão anterior desta seção estava errada"
+    Uma versão anterior desta página (e o `aspm-docs` inteiro por herança) descrevia esta feature como implementada de ponta a ponta. **Não está.** A confusão veio de um commentário de PR e de uma entrada do `TODO.md` do monorepo que citaram hashes de commit incorretamente (o hash citado era o commit-BASE de uma branch de feature, não um merge real). Investigação direta no GitHub (status de PRs) e no código (`git merge-base --is-ancestor`) em 2026-09-10 corrigiu o quadro:
 
-**Por quê:**
-- PRs cobrem o delta de código novo; a Security Baseline cobre o estado atual da `main` sem depender de um push acontecer.
-- captain-hook (`controller/push_controller.py`) dispara o baseline em `push` na default branch, publicando job com `scope=branch`; moby-dick (`baseline_issue_sink_enabled`) agrega o resultado numa Issue do GitHub no repo alvo.
-- Só é mantido 1 run "vigente" por PR (ou por branch) — novos commits/pushes substituem a run anterior.
+**Decisão original:** todo `quality_gate_runs` no pequod teria um `scope`: `pr` (padrão, exige `pull_request_number`) ou `branch` (Security Baseline — avaliação contínua da default branch, exige `branch_name`). Os dois campos mutuamente exclusivos por constraint no banco.
 
-**Ainda em aberto:** gatilho de baseline automático no *onboarding* de um repositório novo (hoje o gatilho é só `push`; não há disparo no momento em que o repo é cadastrado). Ver TODO do monorepo.
+**Estado real por repositório:**
+
+| Repo | Estado | Evidência |
+|---|---|---|
+| **pequod** | ✅ Completo em `main` | commit `fb65ca1` (PR #50) — `deploy/schema.sql`: coluna `scope` + CHECK de exclusividade + índice único parcial `ux_quality_gate_runs_branch`; `wire/schemas/quality_gate_v1.py` valida consistência; `controller/quality_gate_controller.py` processa `scope` em todo o fluxo (workflow.started → evaluate → evaluated); endpoint `/internal/quality-gates/{workflow_id}/evaluate` funcional para os dois scopes. |
+| **captain-hook** | ❌ Não está em `main` | Três PRs (`#38`, `#41`, `#42`) fechados sem merge. `controller/webhook_controller.py` trata `push` como "evento sem processamento dedicado" — apenas loga. `push_controller.py`/`push_adapter.py`/`baseline_context.py` só existem na branch `feat/quality-gate-scope-branch`, não mergeada. |
+| **moby-dick** | ❌ Não está em `main` | PR `#38` aparece como `merged: true` na API do GitHub (31/ago), mas o commit não é ancestral da `main` atual (`git merge-base --is-ancestor` negativo) — removido/revertido depois do merge. `wire/schemas/quality_gate_v1.py` hoje não tem campo `scope` nem `branch_name`; `pull_request_number` é obrigatório. |
+
+**Consequência prática:** um `push` na default branch hoje **não dispara nada** — nem chega a gerar o evento que o pequod saberia processar. Só `scope=pr` funciona de ponta a ponta em produção.
+
+**Por quê a feature ficou pela metade:** o plano de rollout original (descrito no PR do moby-dick) previa a ordem pequod → moby-dick → captain-hook. Pequod e moby-dick foram mergeados nessa ordem, mas o captain-hook (a peça que efetivamente dispara tudo a partir do evento `push` do GitHub) nunca foi integrado — e o lado do moby-dick, ficando órfão (código pronto que nada aciona), acabou sendo removido de `main` em algum momento não documentado.
+
+**Gap detalhado e plano de recuperação:** ver `TODO.md` (raiz do monorepo local, item 2) — lista os arquivos exatos a recuperar/reimplementar em captain-hook e moby-dick, na ordem certa, com os PRs de referência (fechados, mas com diff ainda visível no GitHub).
 
 ---
 
@@ -200,9 +210,10 @@ Sem mudanças — decisão ainda vigente como descrita.
 ## Open questions
 
 - Onde mora a configuração por repo (`.aspm.yml`?) quando precisarmos rotear scanners diferentes por projeto (hoje é tudo por env var global, `ENABLE_*_SCAN`)
-- Gatilho de Security Baseline no onboarding de repositório (§15 — hoje só dispara em `push`)
+- **Recuperar/reimplementar Security Baseline em captain-hook e moby-dick** (§15 — hoje não roda em nenhum evento; pequod já está pronto). Prioridade alta, plano detalhado no `TODO.md` local.
+- Gatilho de Security Baseline no onboarding de repositório — bloqueado até o item acima estar de pé (hoje nem o gatilho por `push` funciona, então "onboarding" seria um segundo gatilho pra uma feature que ainda não existe)
 - Estratégia de retenção de SARIF cru agora que o pequod é o agregador (`sarif_raw` já foi removido como coluna persistida no schema — recomposto via `finding_occurrences.raw_payload`)
-- Métricas / observability formal (Prometheus? OTEL?) — moby-dick já expõe `GET /metrics/quality-gate`, mas não em formato Prometheus, e os outros serviços não têm métricas expostas
+- Métricas / observability formal (Prometheus? OTEL?) — moby-dick e pequod já expõem cada um seu próprio `GET /metrics/quality-gate`, mas não em formato Prometheus
 - Plataforma definitiva pra prod (continuar VPS? K8s? Railway?)
 - Auth de usuário final do heimdall-dashboard (hoje não há OAuth/JWT de usuário — só tokens de serviço entre backends)
 
@@ -213,5 +224,8 @@ Sem mudanças — decisão ainda vigente como descrita.
 - ~~Enriquecimento por IA~~ → TARS AI, via REST contra pequod (§17)
 - ~~Correlação cross-scanner~~ → candidate clustering determinístico no pequod + clustering semântico no TARS AI
 - ~~UI de triagem~~ → heimdall-dashboard (§18)
+
+**Corrigido nesta revisão (2026-09-10), não resolvido — voltou a ser open question:**
+- Security Baseline (§15) — estava listada implicitamente como resolvida em versões anteriores desta página; na verdade nunca funcionou de ponta a ponta em produção.
 
 Atualizar este documento quando uma das perguntas abertas virar decisão.
