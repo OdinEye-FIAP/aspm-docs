@@ -102,7 +102,7 @@ sequenceDiagram
 ```
 
 !!! note "Security Baseline (push na default branch) — confirmado em `main` (reconfirmado 2026-09-10)"
-    Um `push` na default branch dispara o mesmo diagrama acima com duas diferenças: não há PR (o check consolidado "Security Baseline" é criado no commit, não num PR) e, ao final, o `moby-dick` faz upsert de uma **Issue agregada** por (repo, branch) no repositório, via `controller/baseline_sink_controller.py` (kill switch: `BASELINE_ISSUE_SINK_ENABLED`, default `true`). Confirmado ponta a ponta nos três repositórios (captain-hook, moby-dick, pequod) desde 31/ago/2026 — ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico (incluindo uma verificação falha, feita e corrigida ainda hoje, que tinha concluҮdo o contrário a partir de refs git locais desatualizadas).
+    Um `push` na default branch dispara o mesmo diagrama acima com duas diferenças: não há PR (o check consolidado "Security Baseline" é criado no commit, não num PR) e, ao final, o `moby-dick` faz upsert de uma **Issue agregada** por (repo, branch) no repositório, via `controller/baseline_sink_controller.py` (kill switch: `BASELINE_ISSUE_SINK_ENABLED`, default `true`). Confirmado ponta a ponta nos três repositórios (captain-hook, moby-dick, pequod) desde 31/ago/2026 — ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico (incluindo uma verificação falha, feita e corrigida ainda hoje, que tinha concluído o contrário a partir de refs git locais desatualizadas).
 
 ## Direção arquitetural — responsabilidade por camada
 
