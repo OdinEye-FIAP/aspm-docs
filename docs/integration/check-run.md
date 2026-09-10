@@ -186,6 +186,130 @@ sequenceDiagram
     end
 ```
 
+## Ciclo de vida completo (state diagrams)
+
+!!! note "Migrado do FLOWCHART.md da raiz do monorepo (10/set/2026)"
+    Os diagramas abaixo substituem o diagrama de estado antigo do `FLOWCHART.md` local (que cobria só um scanner único, sem check consolidado e sem Security Baseline). Atualizados para os dois níveis de check e para o fluxo de push na default branch.
+
+### Check individual (por scanner)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Inexistente: PR aberto/atualizado<br/>ou push na default branch
+
+    Inexistente --> InProgress: moby-dick cria o check<br/>(external_id=job_id)
+    note right of InProgress
+        Um check por scanner habilitado
+        (SonarQube Scan, Semgrep SAST,
+        Trivy SCA, OWASP ZAP DAST —
+        ou variantes *-Baseline)
+    end note
+
+    InProgress --> Success: scanner exit 0
+    InProgress --> Failure: scanner exit != 0<br/>(findings bloqueantes)
+    InProgress --> Failure: erro operacional<br/>(docker/clone/timeout)
+
+    Success --> InProgress: novo push no PR (synchronize)<br/>ou novo push na default branch
+    Failure --> InProgress: novo push no PR (synchronize)<br/>ou novo push na default branch
+
+    Success --> [*]
+    Failure --> [*]: não bloqueia merge por si só —<br/>quem decide é o check consolidado
+```
+
+### Check consolidado (`OdinEye / Quality Gate`)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Inexistente
+
+    Inexistente --> InProgress: captain-hook publica<br/>quality-gate.workflow.started.v1<br/>moby-dick cria "OdinEye / Quality Gate"
+    note right of InProgress
+        Lista os scanners esperados
+        (mesma lista que gerou
+        os JobDescriptors)
+    end note
+
+    InProgress --> InProgress: a cada scanner concluído,<br/>moby-dick chama POST evaluate no pequod<br/>(ready=false → continua esperando)
+
+    InProgress --> Passed: pequod responde ready=true<br/>decision=passed
+    InProgress --> Warning: decision=warning
+    InProgress --> Failed: decision=failed
+    InProgress --> ErroOperacional: decision=error
+
+    Passed --> InProgress: novo push (PR ou default branch)
+    Warning --> InProgress: novo push
+    Failed --> InProgress: novo push
+    ErroOperacional --> InProgress: novo push
+
+    Passed --> [*]
+    Warning --> [*]
+    Failed --> [*]: merge bloqueado se branch protection<br/>exigir este check
+    ErroOperacional --> [*]: merge bloqueado se branch protection<br/>exigir este check
+
+    note left of Failed
+        Quando scope=branch (Security Baseline):
+        também upsert de uma Issue agregada
+        (label aspm-baseline:<branch>), reaberta
+        automaticamente se um baseline seguinte
+        reprovar depois de o dev tê-la fechado
+    end note
+```
+
+## Error path — cenários de falha na execução (diagrama técnico)
+
+Cobre os caminhos de erro que não aparecem no fluxo feliz acima — útil pra quem mantém a plataforma (moby-dick) diagnosticar por que um check ficou vermelho por motivo operacional, e como a chamada síncrona ao pequod se comporta quando ele está indisponível.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant MD as moby-dick
+    participant DR as Docker
+    participant SR as scanner container
+    participant PQ as pequod
+    participant GHAPI as GitHub API
+
+    MD->>GHAPI: create_check_run(in_progress, external_id=job_id)
+    GHAPI-->>MD: check_run_id
+
+    alt Imagem não existe
+        MD->>DR: containers.run
+        DR-->>MD: ImageNotFound
+        Note over MD: result.error = "image_not_found"<br/>exit_code = -1
+    else Container falha durante execução
+        MD->>DR: containers.run
+        DR->>SR: start
+        SR->>SR: git clone falha<br/>(token inválido, repo privado)
+        SR-->>DR: exit code 128
+        DR-->>MD: ContainerError
+        Note over MD: result.error = str(ContainerError)<br/>exit_code = 128
+    else Scanner reprova (esperado — findings bloqueantes)
+        MD->>DR: containers.run
+        DR->>SR: start
+        SR->>SR: scan encontra findings<br/>que cruzam ASPM_FAIL_ON
+        SR-->>DR: exit code != 0 (sem exceção)
+        DR-->>MD: exit_code != 0, error=None
+        Note over MD: result.success = False<br/>result.error = None
+    else Timeout
+        MD->>DR: containers.run<br/>(DOCKER_RUN_TIMEOUT_SECONDS)
+        DR-->>MD: APIError (timeout)
+        Note over MD: result.error = "docker_api_error: timeout"
+    end
+
+    MD->>MD: _result_to_check_output<br/>mapeia exit/erro → conclusion
+    MD->>GHAPI: update_check_run(conclusion=failure, output.text=logs_tail)
+    Note over GHAPI: Dev vê erro no PR<br/>com logs tail no expandir
+
+    MD->>PQ: POST /internal/quality-gates/{workflow_id}/evaluate
+    alt Pequod pronto (ready=true)
+        PQ-->>MD: QualityGateEvaluatedEvent
+        MD->>GHAPI: update_check_run consolidado<br/>(conclusion=decision)
+    else Pequod 429/5xx/erro de conexão
+        Note over MD: retry exponencial<br/>(PEQUOD_API_MAX_ATTEMPTS /<br/>PEQUOD_API_RETRY_BASE_SECONDS)
+    else Pequod 404 (workflow_id desconhecido)
+        Note over MD: não é retryable — PequodClientError,<br/>logado como warning e engolido;<br/>consumer de quality-gate.evaluated.v1<br/>(fallback) cobre o caso raro
+    end
+```
+
 ## Diferença para outros checks do GitHub
 
 | Check | Origem | O que avalia |

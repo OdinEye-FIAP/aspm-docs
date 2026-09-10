@@ -187,3 +187,27 @@ Ver [referência completa de tópicos](../reference/kafka-topics.md).
 - ❌ **Métricas / observability formal (Prometheus/OTEL)** — só `GET /metrics/quality-gate` (não Prometheus-format) e `journalctl`
 
 Detalhes em [Decisões](decisions.md).
+
+## Convenções dos diagramas e como reaproveitá-los
+
+!!! note "Migrado do FLOWCHART.md da raiz do monorepo (10/set/2026)"
+    O monorepo local mantinha um `FLOWCHART.md` com diagramas equivalentes (defasados — cobriam só Sonar/modo PR). Esta seção preserva as instruções de reuso que só existiam ali; os diagramas de estado e error path foram migrados para [Entendendo o check_run no PR](../integration/check-run.md#ciclo-de-vida-completo-state-diagrams).
+
+Todos os diagramas desta documentação são **Mermaid** — renderizam nativamente no GitHub e no site publicado, e também podem ser importados em ferramentas de diagramação:
+
+1. Copiar **um** code block Mermaid por vez (entre ` ```mermaid ` e ` ``` `)
+2. Lucidchart → **File → Import Diagram → Mermaid**
+3. Colar → **Import**
+4. Reorganizar layout se necessário (Lucid auto-arranja, mas pode precisar de ajuste manual em diagramas grandes)
+
+### Legenda usada nos diagramas de fluxo
+
+| Elemento | Significado |
+|---|---|
+| Seta sólida (`-->`) | chamada síncrona ou publicação direta |
+| Seta tracejada (`-.->`) | retorno assíncrono, dependência fraca, persistência |
+| `Note over`/`note right/left of` | estado interno do componente, não comunicação |
+| Cor azul (`classDef event`/tópicos Kafka) | evento/dado em trânsito |
+| Cor verde (`classDef python`) | serviço Python do ecossistema |
+| Cor amarela (`classDef ephemeral`) | container efêmero/caso especial |
+| Cor vermelha (`classDef external`) | ator ou sistema externo (GitHub, desenvolvedor) |
