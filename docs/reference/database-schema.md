@@ -6,13 +6,13 @@ Convenção de nomenclatura: `finding_cluster`/`finding_cluster_member` represen
 
 ## Diagrama (estilo dbdiagram)
 
-**Total: 22 tabelas** no schema (`finding`, `finding_ai_analysis`, `finding_cluster`, `finding_cluster_ai_analysis`, `finding_cluster_member`, `applications`, `security_tools`, `scans`, `scan_artifacts`, `finding_occurrences`, `finding_identifiers`, `alerts`, `audit_log`, `risk_exceptions`, `security_gate_policies`, `security_gate_evaluations`, `security_gate_items`, `quality_gate_runs`, `quality_gate_scanner_runs`, `semantic_clustering_decision`, `consolidated_risk`, `consolidated_risk_candidate`, `consolidated_risk_finding`).
+**Total: 23 tabelas** no schema (`finding`, `finding_ai_analysis`, `finding_cluster`, `finding_cluster_ai_analysis`, `finding_cluster_member`, `applications`, `security_tools`, `scans`, `scan_artifacts`, `finding_occurrences`, `finding_identifiers`, `alerts`, `audit_log`, `risk_exceptions`, `security_gate_policies`, `security_gate_evaluations`, `security_gate_items`, `quality_gate_runs`, `quality_gate_scanner_runs`, `semantic_clustering_decision`, `consolidated_risk`, `consolidated_risk_candidate`, `consolidated_risk_finding`).
 
 Diagramas Mermaid ER com colunas e tipos, agrupados por domínio (mesma divisão do `schema.sql`). Renderizam como caixas de tabela conectadas no GitHub e no mkdocs-material.
 
-### Visão geral (todas as 22 tabelas)
+### Visão geral (todas as 23 tabelas)
 
-Colunas reduzidas ao essencial (PK/FK + poucos campos identificadores) para caber as 22 tabelas em um único diagrama. Para o detalhe completo de colunas, veja os diagramas por domínio logo abaixo.
+Colunas reduzidas ao essencial (PK/FK + poucos campos identificadores) para caber as 23 tabelas em um único diagrama. Para o detalhe completo de colunas, veja os diagramas por domínio logo abaixo.
 
 ```mermaid
 erDiagram
@@ -646,12 +646,12 @@ Quality Gate (N scanners) → findings.raw (Kafka) → finding (ingestão)
                                               finding_cluster
                                        (+ finding_cluster_member)
                                                         │
-                              ┌─────────────────────────────┴─────────────────────────────┐
+                              ┌──────────────────────────────────┐
                               ▼                                                     ▼
                  auto-attach determinístico                          IA: propose_semantic_clustering
               (find_risk_by_target_on_connection)                      (merge / keep / split)
                               │                                                     │
-                              └─────────────────────────────┬─────────────────────────────┘
+                              └──────────────────────────────────┐
                                                         ▼
                                             semantic_clustering_decision
                                                         │
