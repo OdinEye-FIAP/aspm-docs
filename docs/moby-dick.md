@@ -1,6 +1,9 @@
 # Moby-dick
 
-Orquestrador Docker responsável por consumir jobs do Kafka (`jobs.orchestration`), executar scanners em containers efêmeros e publicar results em `findings.raw`. Também materializa o **Quality Gate** — consolidado e por scanner — como `check_run` do GitHub, e mantém uma **Issue** agregada quando o escopo é `branch` (Security Baseline).
+Orquestrador Docker responsável por consumir jobs do Kafka (`jobs.orchestration`), executar scanners em containers efêmeros e publicar results em `findings.raw`. Também materializa o **Quality Gate** — consolidado e por scanner — como `check_run` do GitHub.
+
+!!! warning "Security Baseline (Issue agregada) — não está em `main` (corrigido 2026-09-10)"
+    Versões anteriores desta página diziam que o moby-dick "mantém uma Issue agregada quando o escopo é `branch`". Esse recurso (`controller/baseline_sink_controller.py`) não existe em `main` hoje — uma PR (#38, "sink dual pra Security Baseline") apareceu como mergeada no histórico do GitHub, mas o commit não é ancestral do `main` atual (revertido/force-pushed depois do merge). O `wire/schemas/quality_gate_v1.py` de hoje nem tem os campos `scope`/`branch_name`. Ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova).
 
 ## Executando local
 
@@ -20,8 +23,9 @@ python3 main.py
 - Consumir `quality-gate.workflow.started.v1` e criar/reconciliar o **check consolidado** (`OdinEye / Quality Gate`)
 - Depois de cada scanner concluir, chamar **sincronamente** o pequod (`POST /api/v1/internal/quality-gates/{workflow_id}/evaluate`) para tentar finalizar o Quality Gate; se finalizado, atualiza o check consolidado imediatamente
 - Consumir `quality-gate.evaluated.v1` apenas como **rede de segurança** (fallback) — não é mais o caminho principal de finalização
-- Quando `scope=branch` (Security Baseline), fazer upsert de uma Issue agregada por (repo, branch) no repositório alvo (`controller/baseline_sink_controller.py`)
 - Expor `GET /metrics/quality-gate` — contadores in-memory (checks criados/reconciliados/completados por decisão, replays ignorados)
+
+Não faz upsert de Issue agregada nem processa `scope=branch` hoje — ver aviso no topo desta página.
 
 ## Subsistema de Quality Gate
 
@@ -89,7 +93,7 @@ Cada scanner, ao terminar, faz o `moby-dick` publicar um `quality-gate.scanner.c
 
 ```mermaid
 flowchart LR
-  GH[GitHub PR / push]
+  GH[GitHub PR]
   CH[captain-hook]
   K[(Kafka/Redpanda)]
   MD[moby-dick]
