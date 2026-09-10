@@ -4,10 +4,13 @@
 
 | Repo | Função | Stack | Estado |
 |---|---|---|---|
-| [`captain-hook`](https://github.com/OdinEye-FIAP/captain-hook) | Ingest de webhook GitHub → publica jobs no Kafka | FastAPI + aiokafka | ✅ ativo |
-| [`moby-dick`](https://github.com/OdinEye-FIAP/moby-dick) | Consumer Kafka → spawna container scanner → extrai arquivo SARIF do container → publica `findings.raw` → reporta check_run | FastAPI + Docker SDK + PyJWT | ✅ ativo |
-| [`pequod`](https://github.com/OdinEye-FIAP/pequod) | Consumer `findings.raw` → normaliza SARIF → upsert por fingerprint → REST | FastAPI + aiokafka + asyncpg | ✅ ativo |
+| [`captain-hook`](https://github.com/OdinEye-FIAP/captain-hook) | Ingest de webhook GitHub (PR + push) → publica jobs no Kafka, 1 por scanner habilitado | FastAPI + aiokafka | ✅ ativo |
+| [`moby-dick`](https://github.com/OdinEye-FIAP/moby-dick) | Consumer Kafka → spawna até 4 containers scanner em paralelo → extrai SARIF → avalia quality gate com pequod (síncrono) → reporta check_run/Issue | FastAPI + Docker SDK + PyJWT | ✅ ativo |
+| [`pequod`](https://github.com/OdinEye-FIAP/pequod) | Consumer `findings.raw` + governança de risco: risk exceptions, security gate, quality gate, candidate clustering, consolidated risk. REST com ~25 rotas | FastAPI + aiokafka + asyncpg | ✅ ativo |
+| [`tars-ai`](https://github.com/OdinEye-FIAP/tars-ai) | Triagem por IA (individual + cluster) e clustering semântico, via REST contra o pequod | FastAPI + Gemini/Groq/HF | ✅ ativo |
+| [`heimdall-dashboard`](https://github.com/OdinEye-FIAP/heimdall-dashboard) | Frontend: governança, quality gate, riscos consolidados, findings técnicos | React + Vite + TypeScript | ✅ ativo |
 | [`clint-eastwood`](https://github.com/OdinEye-FIAP/clint-eastwood) | Repo de teste/demo com código intencionalmente vulnerável | JS | 🧪 demo |
+| [`aspm-vuln-lab`](https://github.com/OdinEye-FIAP/aspm-vuln-lab) | Segundo repo de teste/demo vulnerável, usado pra validar o pipeline | Python | 🧪 demo |
 | [`aspm-docs`](https://github.com/OdinEye-FIAP/aspm-docs) | Esta documentação | MkDocs Material | 📚 doc |
 
 ## captain-hook
@@ -16,172 +19,184 @@
 
 **Responsabilidades:**
 
-- Receber webhooks do GitHub (`POST /webhook`)
-- Validar HMAC do webhook (`GITHUB_WEBHOOK_SECRET`)
+- Receber webhooks do GitHub (`POST /webhook`) e validar HMAC (`GITHUB_WEBHOOK_SECRET`)
 - Publicar o evento bruto em `github.events.raw` (audit/replay)
-- Traduzir `pull_request.{opened,synchronize,reopened}` em `JobDescriptor v1`
-- Publicar o job em `jobs.orchestration`
+- Traduzir `pull_request.{opened,synchronize,reopened}` **e** `push` na default branch em `JobDescriptor v1` — um job por scanner habilitado (Sonar sempre + Semgrep/Trivy/ZAP via flag)
+- Publicar registro/baixa de repositório (`repository.registered.v1`/`repository.unregistered.v1`) a partir dos eventos `installation`/`installation_repositories`
+- Expor `GET /repos/{owner}/{repo}/live-info` (issues/dependências ao vivo) e `POST /repos/{owner}/{repo}/scaffold-pr` (abre PR de onboarding sob demanda)
+- Auto-scaffold de PR (`ENABLE_REPO_SCAFFOLD_PR`) quando um repositório é registrado e não tem os arquivos esperados
 
 **O que NÃO faz:**
 
 - Não conhece Docker
-- Não conhece scanners
-- Não tem credenciais da GitHub App
+- Não conhece o formato específico de nenhum scanner
+- Não tem credenciais da GitHub App (isso é do moby-dick)
 - Não responde quando o scan termina
 
-**Entry:** `main.py` → FastAPI app.
-
-**Settings principais:**
+**Settings principais (`config/settings.py`):**
 
 ```env
 GITHUB_WEBHOOK_SECRET=...
+GITHUB_APP_ID=...
+GITHUB_INSTALLATION_ID=...
+ENABLE_REPO_SCAFFOLD_PR=false
+CORS_ALLOWED_ORIGINS=...
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-SONAR_HOST_URL=http://aspm-sonarqube:9000
-SONAR_TOKEN=<global analysis token>
+KAFKA_MESSAGE_SECRET=...
 DEFAULT_JOB_IMAGE=aspm-sonar-runner:latest
+ENABLE_SEMGREP_SCAN=false
+ENABLE_TRIVY_SCAN=false
+ENABLE_ZAP_SCAN=false
+DAST_MODE=compose_preview
 ```
 
 ## moby-dick
 
-**Papel:** orquestrador de Docker. Nada além disso.
+**Papel:** orquestrador de Docker + avaliador de quality gate.
 
 **Responsabilidades:**
 
-- Consumir `jobs.orchestration` do Kafka
-- Mintar `installation_token` via GitHub App (JWT → access_tokens)
-- Criar `check_run` no PR com status `in_progress`
-- Mesclar `GIT_TOKEN` no env do container
-- Rodar container Docker da image especificada no `JobDescriptor`
-- Coletar exit code + logs
-- Extrair `/tmp/scan.sarif.json` do container via `container.get_archive()` (formato neutro, scanner-agnóstico)
-- Publicar SARIF em `findings.raw`
-- Atualizar `check_run` com `conclusion=success/failure`
+- Consumir `jobs.orchestration` do Kafka; mintar `installation_token` via GitHub App
+- Criar `check_run` "OdinEye / Quality Gate" no PR (ou uma Issue de baseline, se `scope=branch`) com status `in_progress`
+- Rodar até `SCANNER_MAX_CONCURRENCY` containers em paralelo, um por scanner do workflow
+- Extrair `/tmp/scan.sarif.json` de cada container via `container.get_archive()` — não fala com a API de nenhum scanner, isso já sai pronto da image
+- Publicar SARIF em `findings.raw` e chamar **de forma síncrona** `POST /internal/quality-gates/{workflow_id}/evaluate` no pequod a cada scanner concluído
+- Atualizar o check_run/Issue com a decisão final quando todos os scanners esperados reportarem
+- Expor `GET /metrics/quality-gate`
 
 **O que NÃO faz:**
 
-- Não conhece nenhum scanner específico (Sonar, Semgrep, Trivy)
-- Não chama API de scanner — toda conversa scanner-específica vive **dentro da image** do scanner
-- Não persiste findings (delega ao `pequod`)
-- Não normaliza SARIF em entidade de domínio (delega ao `pequod`)
-
-!!! info "Estado transitório (Decisão §11)"
-    Hoje `moby-dick/adapter/sonar/issues_to_sarif.py` ainda chama a Sonar API diretamente. A migração pra dentro do `sonar-runner` (entrypoint emite `/tmp/scan.sarif.json`) está planejada — após ela, moby-dick fica realmente Docker-only.
-
-**Entry:** `main.py` → FastAPI + background consumer loop.
+- Não conhece nenhum scanner específico — toda conversa scanner-específica vive dentro da image do scanner (ver [Decisão §11](decisions.md#11-extração-de-findings-dentro-da-scanner-image-status-concluído-não-é-mais-target))
+- Não persiste findings nem decide policy de governança (delega ao pequod)
 
 **Settings principais:**
 
 ```env
 GITHUB_APP_ID=...
-GITHUB_APP_PRIVATE_KEY_PATH=./config/github-app-private-key.pem
-GITHUB_INSTALLATION_ID=...
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_MESSAGE_SECRET=...
+QUALITY_GATE_CONSUMER_GROUP=moby-dick-quality-gate
+SCANNER_MAX_CONCURRENCY=4
+PEQUOD_BASE_URL=http://localhost:7070
+PEQUOD_SERVICE_TOKEN=...
+HEIMDALL_BASE_URL=...
 DOCKER_NETWORK=aspm-net
-DOCKER_RUN_TIMEOUT_SECONDS=600
-TOPIC_FINDINGS_RAW=findings.raw
-# SARIF dentro do container (convenção shared com scanner image)
 SARIF_OUTPUT_PATH=/tmp/scan.sarif.json
 ```
 
 **Pastas-chave:**
 
-- `controller/job_controller.py` — fluxo de processamento de job + publicação de findings
-- `diplomat/http_out/github_client.py` — GitHub App API client
-- `diplomat/runner/docker_runner.py` — Docker SDK wrapper + extração de arquivo
-- `diplomat/messaging/kafka_consumer.py` — consumer Kafka (`jobs.orchestration`)
-- `diplomat/messaging/kafka_producer.py` — producer Kafka (`findings.raw`)
-- `deploy/sonar-runner/` — Dockerfile + entrypoint do scanner (dono do conhecimento Sonar)
+- `controller/job_controller.py`, `controller/quality_gate_check_controller.py`, `controller/baseline_sink_controller.py`
+- `diplomat/http_out/github_client.py`, `diplomat/http_out/pequod_client.py`
+- `diplomat/runner/docker_runner.py`
+- `diplomat/messaging/kafka_consumer.py`, `diplomat/messaging/quality_gate_consumer.py`
+- `deploy/{sonar,semgrep,trivy,zap}-runner/` — Dockerfile + entrypoint de cada scanner (dono do conhecimento scanner-específico)
 
 ## pequod
 
-**Papel:** camada de persistência de findings normalizados.
+**Papel:** camada de persistência **e governança de risco**.
 
 **Responsabilidades:**
 
-- Consumir `findings.raw` do Kafka
-- Parsear SARIF v2.1.0 → entidade `Finding`
-- Calcular `fingerprint` SHA-256 determinístico (scanner + rule + repo + file + line + snippet)
-- Upsert idempotente `ON CONFLICT (fingerprint, repo)` — atualiza `last_seen_at` + ref/severity/message
-- Expor REST: `GET /findings` (filtros por repo/severity/status), `GET /findings/{id}`, `PATCH /findings/{id}` (triage)
+- Consumir `findings.raw`, parsear SARIF v2.1.0 → `Finding v1`, fingerprint determinístico por `repo_id`
+- Avaliar Quality Gate (síncrono, chamado pelo moby-dick) com suporte a `scope=pr`/`scope=branch`
+- Security Gate: políticas versionadas, avaliações, itens bloqueantes/de aviso
+- Risk Exceptions: aceitar/suprimir/marcar falso-positivo um finding ou cluster
+- Candidate Clustering: agrupamento determinístico de findings correlacionados
+- Consolidated Risk: risco "canônico" pós-decisão de IA (TARS) ou auto-attach determinístico
+- Expor REST (~25 rotas) pra heimdall-dashboard e tars-ai
 
 **O que NÃO faz:**
 
-- Não chama scanners (consumer puro de evento)
-- Não decide policy / quality gate (responsabilidade de moby-dick + Sonar)
-- Não enriquece com IA (fica em serviço separado quando entrar)
-
-**Entry:** `main.py` → FastAPI + lifespan (DB pool + Kafka consumer).
+- Não chama scanners nem conhece Docker/GitHub
+- Não roda IA por conta própria — delega ao tars-ai via REST (`/integrations/tars/*`)
 
 **Settings principais:**
 
 ```env
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_CONSUMER_GROUP=pequod
-TOPIC_FINDINGS_RAW=findings.raw
-DATABASE_URL=postgresql://pequod:pequod@localhost:5433/pequod
+DATABASE_URL=******** `diplomat/http_in/{api_v1_router,tars_integration_router,moby_dick_integration_router,quality_gates_router}.py`
+- `controller/{tars_integration,candidate_clustering,consolidated_risk,quality_gate_security}_controller.py`
+- `model/{finding,risk_exception,security_gate_policy,quality_gate_run}.py`
+- `deploy/schema.sql` — schema consolidado (substitui migrations incrementais)
+
+## tars-ai
+
+**Papel:** triagem por IA e clustering semântico.
+
+**Responsabilidades:**
+
+- Modo principal: `TARS_PEQUOD_INTEGRATION_ENABLED=true` — busca pendências no pequod via REST (`/integrations/tars/pending-findings`, `/pending-clusters`, `/semantic-candidates`) e submete vereditos
+- Análise individual de finding (campos slim: `recommendation`/`priority`/`confidence`/`model_name`) e análise de cluster (campos completos, incluindo `summary`/`impact`/`false_positive_likelihood`/`reasoning_short`)
+- Clustering semântico: propõe `merge`/`keep`/`split` que o pequod grava como `consolidated_risk`
+- Provider de IA ativo: Gemini (`gemini-2.5-flash`); `groq` e `huggingface` disponíveis via factory
+- Modo legado (acesso direto ao banco do pequod) ainda existe, desligado por padrão
+
+**O que NÃO faz:**
+
+- Não escreve direto no banco quando `TARS_PEQUOD_INTEGRATION_ENABLED=true` — tudo via REST
+- Não roda scan nem conhece Docker/GitHub
+
+**Settings principais:**
+
+```env
+TARS_PEQUOD_INTEGRATION_ENABLED=true
+PEQUOD_BASE_URL=http://localhost:7070
+PEQUOD_SERVICE_TOKEN=...
+AI_PROVIDER=gemini
+GEMINI_MODEL=gemini-2.5-flash
+TARS_AUTO_ANALYZE_ENABLED=true
+TARS_AUTO_ANALYZE_INTERVAL_SECONDS=60
 ```
 
-**Pastas-chave:**
+## heimdall-dashboard
 
-- `controller/ingest_controller.py` — orquestração da ingestão
-- `controller/query_controller.py` — orquestração das queries REST
-- `adapter/sarif/sarif_to_finding.py` — parser SARIF tolerante
-- `model/finding.py` — entidade + `compute_fingerprint`
-- `diplomat/db/finding_repo.py` — SQL puro (asyncpg, sem ORM)
-- `diplomat/db/pool.py` — pool asyncpg
-- `diplomat/messaging/kafka_consumer.py` — consumer Kafka
-- `deploy/migrations/001_init.sql` — schema inicial
+**Papel:** frontend de governança/quality gate/riscos.
 
-## clint-eastwood
+**Responsabilidades:**
 
-**Papel:** repo de demonstração.
+- Consome 3 backends via REST: `pequodApi.ts` (organizações, aplicações, scans, alertas, risk exceptions, audit log, security gate, quality gate, riscos consolidados), `tarsApi.ts` (análises de IA), `captainHookApi.ts` (live-info de repositório, scaffold de PR)
+- 6 abas: organizações, repositórios, governança, quality gate, findings técnicos, riscos consolidados
+- 23 componentes em `src/components/`
 
-Contém arquivos com vulnerabilidades intencionais (`security-issues.js`, `code-smells.js`, `sonarqube-demo.js`) pra validar que o pipeline detecta findings de:
+**O que NÃO faz:**
 
-- Hardcoded credentials
-- SQL/Command injection
-- Weak cryptography (MD5, DES)
-- Hotspots de regex / Math.random / HTTP
-- Bugs (NaN compare, dead code)
-- Code smells (cognitive complexity, magic numbers, `==`, console.log)
+- Não acessa nenhum banco ou Kafka diretamente — é camada 100% de apresentação
 
-Cada bloco anotado com a regra Sonar correspondente.
+**Settings principais:**
 
-**Não é parte da plataforma.** É um repo onboardado pra validação. Outros repos onboardados seguem o mesmo padrão de integração.
+```env
+VITE_PEQUOD_API_URL=http://localhost:7070
+VITE_TARS_API_URL=http://localhost:6060
+VITE_CAPTAIN_HOOK_API_URL=http://localhost:8080
+```
+
+## clint-eastwood / aspm-vuln-lab
+
+**Papel:** repos de demonstração com vulnerabilidades intencionais, usados pra validar que o pipeline detecta findings (hardcoded credentials, SQL/command injection, weak crypto, dependências vulneráveis, etc). Não fazem parte da plataforma — são repos onboardados pra validação, como qualquer outro.
 
 ## aspm-docs
 
-**Papel:** documentação central (este site).
-
-**Estrutura:**
-
-```
-docs/
-├── index.md              # landing
-├── overview/             # stakeholder
-├── developer/            # você + time
-├── integration/          # devs onboardando seus repos
-└── reference/            # schemas + APIs
-```
-
-**Deploy:** push em `main` → GitHub Actions → GitHub Pages.
+**Papel:** documentação central (este site). Deploy: push em `main` → GitHub Actions → GitHub Pages.
 
 ## Convenções entre repos
 
-- **Branches feat:** `feat/<scope>`, `fix/<scope>`, `docs/<scope>`
+- **Branches:** `feat/<scope>`, `fix/<scope>`, `docs/<scope>`, `chore/<scope>`, `refactor/<scope>`
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`)
-- **Tags:** semver futuramente
-- **Releases:** sem release formal por enquanto — deploy é via `git pull` + `systemctl restart` na VPS
-- **Schemas compartilhados:** copiados entre captain-hook/moby-dick por enquanto. Quando virar pacote pip (`aspm-wire`), vai ser source-of-truth único.
+- **Releases:** sem release formal — deploy é via `git pull` + `systemctl restart` na VPS
+- **Schemas compartilhados:** copiados entre repos por enquanto (sem pacote `aspm-wire` ainda — ver [Decisão §9 do DECISIONS.md de cada serviço]) — decisão consciente, revisitada quando um 3º consumer Kafka aparecer
 
-## Componentes futuros previstos
+## Componentes previstos que já foram criados
 
-| Nome candidato | Função | Stack provável |
+A versão anterior desta página listava `ai-triage` e `findings-ui` como componentes futuros. Ambos já existem:
+
+- `ai-triage` → **`tars-ai`** (triagem por IA + clustering semântico)
+- `findings-ui` → **`heimdall-dashboard`** (UI de governança/triagem)
+
+## Componentes ainda não criados
+
+| Nome candidato | Função | Observação |
 |---|---|---|
-| `policy-engine` | Decide quais scanners rodar por repo/PR (`.aspm.yml`) | Python + YAML config |
-| `ai-triage` | Classifica findings via LLM (false-positive, severity ajustada) | Python + Anthropic SDK |
-| `correlation-service` | Embeddings + grafo cross-scanner | Python + pgvector |
-| `findings-ui` | UI Web pra triagem manual | Next.js ou Streamlit |
-| `notifier` | Posta findings críticos em Slack/email | Python |
-
-Os papéis de `findings-ingestor` e `findings-api` foram absorvidos pelo [`pequod`](https://github.com/OdinEye-FIAP/pequod). Os outros serão criados conforme o roadmap avança.
+| `policy-engine` | Decide quais scanners rodar por repo/PR via config declarativa (`.aspm.yml`) | Hoje o roteamento é só por env var global (`ENABLE_*_SCAN`), não por repositório |
+| `correlation-service` | Grafo de correlação cross-scanner mais amplo que o candidate clustering atual | Candidate clustering (determinístico) e clustering semântico (TARS) já cobrem boa parte do caso de uso |
+| `notifier` | Posta findings críticos em Slack/email | `alerts` já existe no pequod como modelo de dados; falta o canal de entrega externo |

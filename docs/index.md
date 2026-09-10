@@ -1,43 +1,43 @@
 # ASPM-AI
 
-Plataforma **Application Security Posture Management** com IA em construção pela OdinEye-FIAP.
+Plataforma **Application Security Posture Management** com IA da OdinEye-FIAP.
 
 ## O que entrega
 
-Quando um PR é aberto/atualizado num repo onboardado, a plataforma:
+Quando um PR é aberto/atualizado, ou há um `push` na default branch, num repo onboardado, a plataforma:
 
 1. Recebe o webhook do GitHub
-2. Despacha um scanner em container isolado
-3. Roda análise (atualmente SonarQube; mais scanners e enriquecimento por IA virão)
-4. Extrai findings, normaliza em SARIF v2.1.0 e persiste no `pequod`
-5. Reporta o resultado como **check_run** no PR
-6. Bloqueia ou libera merge conforme Quality Gate
+2. Despacha um scanner (Sonar, Semgrep, Trivy e/ou ZAP, conforme habilitado) em container isolado por scanner
+3. Extrai findings normalizados em SARIF v2.1.0 direto do container e persiste no `pequod`
+4. Avalia o Quality Gate — com suporte a PR (`scope=pr`) e Security Baseline da default branch (`scope=branch`)
+5. Reporta o resultado como **check_run** no PR (ou Issue de baseline, se `scope=branch`)
+6. `tars-ai` triagem findings/clusters por IA (recomendação, prioridade, clustering semântico)
+7. `heimdall-dashboard` exibe tudo: governança, quality gate, riscos consolidados
 
 ```mermaid
 flowchart LR
     Dev[Desenvolvedor]
-    GH[GitHub PR]
+    GH[GitHub PR / push]
     CH[captain-hook]
     K[(Kafka)]
-    MD[moby-dick<br/>orquestra Docker]
-    SR[scanner container<br/>self-contained:<br/>scan + emite SARIF]
-    SQ[SonarQube]
-    PQ[pequod<br/>storage canônico]
-    PG[(postgres)]
+    MD[moby-dick]
+    SR["scanner container<br/>(1 de 4)"]
+    PQ[pequod]
+    TA[tars-ai]
+    HD[heimdall-dashboard]
 
-    Dev -->|push| GH
+    Dev -->|push / PR| GH
     GH -->|webhook| CH
     CH -->|jobs.orchestration| K
     K -->|consume| MD
     MD -->|spawn| SR
-    SR -->|sonar-scanner| SQ
-    SQ -->|QG + issues| SR
     SR -->|SARIF em /tmp/scan.sarif.json| MD
-    MD -->|findings.raw SARIF| K
-    K -->|consume| PQ
-    PQ -->|upsert| PG
-    MD -->|check_run| GH
-    GH -->|status| Dev
+    MD -->|findings.raw + quality gate síncrono| PQ
+    MD -->|check_run / Issue| GH
+    TA <-->|REST| PQ
+    HD -->|REST| PQ
+    HD -->|REST| TA
+    HD -->|REST| CH
 ```
 
 ## Onde começar
@@ -64,35 +64,36 @@ flowchart LR
 |---|---|
 | Ingest | FastAPI (`captain-hook`) |
 | Transport | Redpanda (Kafka-compatible) |
-| Orchestration | FastAPI (`moby-dick`) + Docker SDK |
-| Scanner | SonarQube Community Build (image wrapper `aspm-sonar-runner`) |
+| Orchestration + Quality Gate | FastAPI (`moby-dick`) + Docker SDK |
+| Scanners | Sonar, Semgrep, Trivy, ZAP — 4 images self-contained |
 | Auth GitHub | GitHub App + installation token |
-| Normalização SARIF | adapter em `moby-dick` (Sonar API → SARIF v2.1.0) |
-| Persistência scanner | postgres (`sonar-db`) |
-| Persistência findings normalizados | FastAPI (`pequod`) + postgres + asyncpg |
+| Governança de risco / storage | FastAPI (`pequod`) + postgres + asyncpg |
+| Triagem por IA | FastAPI (`tars-ai`) + Gemini/Groq/HuggingFace |
+| Dashboard | React + Vite + TypeScript (`heimdall-dashboard`) |
 | Deploy | docker-compose + systemd na VPS |
 
 ## Estado
 
 | Componente | Status |
 |---|---|
-| Pipeline GitHub → check_run | ✅ funcionando end-to-end |
-| Scanner SonarQube | ✅ funcionando |
-| Extração SARIF cross-scanner | 🚧 hoje em `moby-dick/adapter/sonar`; migrando para dentro da scanner image ([§11](overview/decisions.md#11-extração-de-findings-dentro-da-scanner-image-target-arquitetural)) |
-| Storage central de findings | ✅ `pequod` consume `findings.raw`, normaliza e dedupa por fingerprint |
-| REST de findings (UI/IA) | ✅ `GET/PATCH /findings` em `pequod` |
-| Pequod como source-of-truth (substitui papel do `sonar-db`) | 🎯 intenção declarada ([§14](overview/decisions.md#14-pequod-como-source-of-truth-de-findings-substitui-sonar-db-a-longo-prazo)) |
-| Correlação cross-scanner | ⏳ adiado (precisa 2º scanner) |
-| Enriquecimento IA | ⏳ adiado |
+| Pipeline GitHub → check_run | ✅ funcionando end-to-end, PR e Security Baseline |
+| Scanners (Sonar, Semgrep, Trivy, ZAP) | ✅ funcionando, fan-out por PR |
+| Extração SARIF dentro da scanner image | ✅ concluída para os 4 scanners |
+| Quality Gate síncrono (moby-dick ↔ pequod) | ✅ funcionando |
+| Storage + governança de risco (risk exceptions, security gate, clustering) | ✅ `pequod` |
+| Triagem por IA (individual + cluster) | ✅ `tars-ai` (Gemini) |
+| Dashboard de governança | ✅ `heimdall-dashboard` |
+| Correlação cross-scanner mais ampla (grafo/embeddings gerais) | ⏳ parcial — candidate clustering + clustering semântico cobrem o caso principal |
+| Reachability analysis / fix suggestions automáticos | ⏳ não iniciado |
 
-Estamos na **fase 1** do roadmap: pipeline E2E vivo, findings persistidos. Próximos passos: (i) migrar extração SARIF pra dentro do scanner image, (ii) adicionar 2º scanner, (iii) camada de IA sobre `pequod`.
+Estamos na fase de consolidação: pipeline E2E maduro com 4 scanners, governança de risco e triagem por IA já em produção. Próximos passos: reachability analysis, fix suggestions, e métricas formais (Prometheus/OTEL).
 
 ## Projetos documentados
 
-- [Pequod](pequod.md) — camada de persistência de findings
-- [Moby-dick](moby-dick.md) — orquestrador Docker
-- [TARS AI](tars-ai.md) — serviço de IA para triagem/enriquecimento
+- [Pequod](pequod.md) — camada de persistência e governança de risco
+- [Moby-dick](moby-dick.md) — orquestrador Docker + quality gate
+- [TARS AI](tars-ai.md) — serviço de IA para triagem/clustering
 - [Heimdall Dashboard](heimdall-dashboard.md) — frontend de visualização
 - [Captain-hook](captain-hook.md) — ingest de webhooks GitHub
 
-Última atualização: 2026-08-17T23:32:31.855Z
+Última atualização: 2026-09-10

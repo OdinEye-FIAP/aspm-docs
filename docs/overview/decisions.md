@@ -4,20 +4,22 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 
 ---
 
-## 1. SonarQube como scanner inicial
+## 1. SonarQube como scanner inicial (status: superado — hoje são 4 scanners)
 
-**Decisão:** integrar SonarQube como primeiro scanner SAST disparado em PRs.
+**Decisão original:** integrar SonarQube como primeiro scanner SAST disparado em PRs.
 
-**Por quê:**
+**Status atual (atualizado 2026-09-10):** `moby-dick/deploy/` hoje mantém 4 imagens de scanner (`sonar-runner`, `semgrep-runner`, `trivy-runner`, `zap-runner`). Captain-hook faz fan-out: um PR gera um `JobDescriptor` por scanner habilitado (`ENABLE_SEMGREP_SCAN`, `ENABLE_TRIVY_SCAN`, `ENABLE_ZAP_SCAN`, mais Sonar sempre ativo), e moby-dick roda até `SCANNER_MAX_CONCURRENCY=4` containers em paralelo por job. O padrão previsto abaixo (§5, image-per-scanner) se confirmou: nenhum dos 3 scanners novos exigiu refactor em moby-dick ou pequod.
+
+**Por quê (contexto histórico, ainda válido):**
 - Plataforma madura, cobre múltiplas linguagens out-of-the-box
 - Quality Gate dá veredito binário (pass/fail) — encaixa no `check_run` do GitHub
 - UI pronta pra inspeção manual durante validação inicial
 
-**Alternativas descartadas agora:** Semgrep / Trivy / CodeQL — serão considerados quando precisarmos de scanners adicionais ou substituir o Sonar. Stack permite trocar/somar sem refactor (image-per-scanner).
-
 ---
 
 ## 2. SonarQube + `sonar-db` dedicado (postgres)
+
+Sem mudanças — decisão ainda vigente como descrita.
 
 **Decisão:** Sonar roda com seu próprio postgres dedicado.
 
@@ -26,50 +28,43 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 - Não existe "Sonar stateless" — restrição da própria ferramenta
 - DB dedicado mantém o Sonar como black-box: ninguém mais escreve nele
 
-**Futuro:** `sonar.jdbc.url` é configurável. Quando aparecer 2º serviço com necessidade de DB, podemos migrar pra postgres **central** com schemas separados.
-
 ---
 
 ## 3. Compose Sonar dentro do captain-hook (provisório)
 
-**Decisão:** `sonarqube` + `sonar-db` + rede `aspm-net` vivem no `captain-hook/docker-compose.yml` junto com Redpanda.
+Sem mudanças — decisão ainda vigente como descrita.
 
-**Por quê:** conveniência operacional — já tinha compose pra Redpanda.
+**Decisão:** `sonarqube` + `sonar-db` + rede `aspm-net` vivem no `captain-hook/docker-compose.yml` junto com Redpanda.
 
 **Trade-off:** acoplamento operacional (derrubar captain-hook derruba Sonar/Redpanda).
 
-**Futuro:** mover pra `infra/docker-compose.yml` na raiz quando houver mais componentes.
-
 ---
 
-## 4. Storage central de findings (revisto: agora ativo via pequod)
+## 4. Storage central de findings (status: superado — pequod é hoje camada de governança completa)
 
 **Decisão original:** não construir storage central de findings; usar só `check_run` do PR como feedback.
 
-**Revisão (2026-06-23):** com pipeline E2E validado, criamos o [`pequod`](https://github.com/OdinEye-FIAP/pequod) — consumer de `findings.raw`, normaliza SARIF em `Finding v1`, dedupa por fingerprint SHA-256, expõe REST.
+**Revisão 2026-06-23:** criamos o [`pequod`](https://github.com/OdinEye-FIAP/pequod) como consumer de `findings.raw`.
 
-**Por que mudou:**
-- Pipeline end-to-end já validado (check_run funcionando)
-- Validar suposições de schema unificado antes do 2º scanner chegar é mais barato do que esperar
-- Triagem manual no Sonar UI não escala — `PATCH /findings/{id}` permite workflow de aprovação fora do Sonar
-- Base preparada pra camada de IA (pgvector, ai_triage) sem mexer no orquestrador
+**Status atual (atualizado 2026-09-10): muito além de storage.** O pequod hoje é a camada de **governança de risco** do ecossistema, não só um storage de findings:
 
-**Ainda adiados conscientemente:**
-- DefectDojo ou agregador equivalente (pequod já cobre)
-- Enriquecimento por IA (próxima fase)
-- Correlação cross-scanner (precisa 2º scanner)
-- UI Web de triagem (só REST por enquanto)
+- **Risk Exceptions** — decisão de governança (`false_positive`/`accepted_risk`/`suppressed`) sobre um finding ou cluster.
+- **Security Gate** — políticas versionadas (por aplicação ou globais), avaliadas contra findings/clusters de um scan.
+- **Quality Gate** — orquestrado pelo pequod via endpoint síncrono chamado pelo moby-dick a cada scanner concluído (`POST /internal/quality-gates/{workflow_id}/evaluate`), com suporte a `scope=pr` (padrão) **e** `scope=branch` (Security Baseline — avaliação contínua da default branch, ver §15).
+- **Candidate Clustering** — agrupamento determinístico de findings correlacionados, antes de qualquer decisão semântica.
+- **Consolidated Risk** — a unidade de risco "canônica" exibida no heimdall-dashboard, resultado de decisão de IA do TARS (`merge`/`keep`/`split`) ou auto-attach determinístico.
+- API REST com ~25 rotas (organizations, applications, scans, risk-exceptions, alerts, audit-logs, security-gate, consolidated-risks, quality-gates, integrações tars/moby-dick).
+
+**Ainda adiado consciente:**
+- Reachability analysis e fix suggestions automáticos (a triagem do TARS cobre recomendação/prioridade, não geração de patch)
 
 ---
 
-## 5. Image wrapper `aspm-sonar-runner` com clone-in-container
+## 5. Image wrapper `aspm-sonar-runner` (e demais scanners) com clone-in-container
 
-**Decisão:** scanner roda numa imagem custom (`sonarsource/sonar-scanner-cli:11` + entrypoint) que clona o repo dentro do próprio container.
+**Decisão:** scanner roda numa imagem custom que clona o repo dentro do próprio container.
 
-**Por quê:**
-- Mantém moby-dick agnóstico (não sabe SAST/git/Sonar)
-- Sem volume mount entre host e container (portável, K8s-friendly)
-- Imagem reutilizável independente do orquestrador
+**Status atual:** o mesmo padrão foi replicado para `semgrep-runner`, `trivy-runner` e `zap-runner` sem alterar moby-dick — confirma a tese original de que adicionar scanner é só "build de image nova".
 
 **Trade-off:** re-clone a cada scan (sem cache). Aceitável enquanto repos são pequenos.
 
@@ -77,176 +72,119 @@ Registro curto das decisões tomadas e os trade-offs por trás. Formato ADR-lite
 
 ## 6. `GIT_TOKEN` injetado em runtime pelo moby-dick
 
-**Decisão:** captain-hook **não** coloca token GitHub no `JobDescriptor.env`. moby-dick minta installation token via GitHub App e injeta `GIT_TOKEN` no env do container antes do `docker run`.
-
-**Por quê:**
-- Token não trafega pelo Kafka
-- captain-hook não precisa de credenciais da GitHub App
-- Token TTL curto (1h), cacheado em memória — rotação automática
-
-**Trade-off:** moby-dick concentra credenciais da App. Vault/secrets manager fica pra depois.
+Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
-## 7. Modo de scan: análise principal (sem PR mode)
+## 7. Modo de scan: análise principal (sem PR mode) — confirmado, limitação real do Sonar Community
 
-**Decisão (atualizada):** scanner roda **sem** flags `sonar.pullrequest.*`. Cada scan sobrescreve a análise principal do projeto Sonar.
+**Decisão:** scanner roda **sem** flags `sonar.pullrequest.*` por padrão. Cada scan sobrescreve a análise principal do projeto Sonar.
 
-**Por quê:**
-- SonarQube **Community Build não suporta** `sonar.pullrequest.*` nem `sonar.branch.*` — features pagas (Developer Edition+)
-- Tentativa inicial com PR decoration falhou na validação ("Developer Edition required")
-- Quality Gate continua funcionando: avalia código analisado, exit code reflete
+**Confirmado no código (`moby-dick/deploy/sonar-runner/entrypoint.sh`):** SonarQube Community Build **não suporta** `sonar.pullrequest.*`/`sonar.branch.*` (features pagas, Developer Edition+). O entrypoint só adiciona essas flags se `SONAR_PR_MODE=enabled` for setado explicitamente (kill switch operacional, não é o default).
+
+!!! warning "Isto contradiz uma afirmação antiga no `DECISIONS.md` do captain-hook"
+    O `DECISIONS.md` na raiz do monorepo (`captain-hook`/`moby-dick`/etc.) tem uma seção que descreve PR decoration (`sonar.pullrequest.key/branch/base`) como comportamento vigente. O código real (este entrypoint) mostra que isso está desligado por padrão desde que o Community Build se mostrou incompatível com PR mode. Sinalizado para correção cruzada.
 
 **Trade-off aceito:**
 - ❌ Sem isolamento entre PRs no Sonar UI (último scan ganha)
-- ❌ Sem decoração visual de PR
-- ✅ check_run no PR ainda funciona (sinal binário)
-
-**Opt-in para Developer Edition:** entrypoint do scanner aceita `SONAR_PR_MODE=enabled` pra reativar flags quando/se migrarem.
-
-**Alternativas futuras:**
-- SonarCloud free (grátis pra open-source, suporta PR mode)
-- Sonar Developer Edition (~$160/dev/ano)
-- Trocar pra Semgrep / CodeQL (modelos diferentes, sem essa limitação)
+- ❌ Sem decoração visual de PR no Sonar
+- ✅ `check_run` no PR ainda funciona (sinal binário) — é o canal de feedback real, não o Sonar UI
 
 ---
 
 ## 8. Quality Gate FAIL → `conclusion=failure`
 
-**Decisão:** quando QG falha, `check_run.conclusion=failure` (não `neutral`).
-
-**Por quê:**
-- Permite branch protection bloquear merge
-- Sinal binário claro pro desenvolvedor
-- `qualitygate.wait=true` no scanner faz exit code refletir QG → mapeamento direto
+Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
 ## 9. Persistência do Redpanda
 
-**Decisão (descoberta operacional):** Redpanda **precisa** de volume persistente (`redpanda-data`).
-
-**Por quê:**
-- Sem volume, `docker compose down`/`up` recria broker
-- aiokafka producer mantém PID + sequence number em memória
-- Broker novo emite IDs novos → producer envia sequence desalinhado → `OutOfOrderSequenceNumber`
-- Captain-hook precisava de restart toda vez que Redpanda caía
-
-**Trade-off:** volume persistente requer backup quando subir pra prod.
+Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
 ## 10. Documentação centralizada (este site)
 
-**Decisão:** doc do projeto vive em repo dedicado `aspm-docs` com MkDocs Material, publicado em GitHub Pages.
-
-**Por quê:**
-- 3 audiências diferentes (dev, stakeholder, integrador) num lugar só
-- Versionada com git
-- Busca + dark mode + tabs gratuitos via Material
-- Independente dos serviços (não acopla doc a release de código)
-
-**Trade-off:** repo a mais pra cuidar. README curto por serviço aponta pra este site.
+Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
-## 11. Extração de findings dentro da scanner image (target arquitetural)
+## 11. Extração de findings dentro da scanner image (status: **concluído**, não é mais "target")
 
-**Decisão atual (transitória):** moby-dick chama `GET /api/issues/search` da Sonar API após `container.wait()` do scanner, converte resposta → SARIF, publica `findings.raw`. Vive em `moby-dick/adapter/sonar/issues_to_sarif.py`.
+**Decisão atual (antes transitória, hoje vigente):** a chamada à Sonar API (`GET /api/issues/search`) + conversão para SARIF **já migrou para dentro do `sonar-runner`** (`moby-dick/deploy/sonar-runner/entrypoint.sh` + `issues_to_sarif.py`, ambos dentro da image do scanner). `moby-dick/adapter/sonar/issues_to_sarif.py` **não existe mais** nesse path — o adapter que sobrou em `moby-dick/adapter/` (`sarif_to_check_run.py`) é outra coisa: converte SARIF em anotações de `check_run`, não fala com a API do Sonar.
 
-**Decisão revista (target):** a chamada Sonar API + conversão SARIF **migra para dentro do `sonar-runner` (image do scanner)**. Scanner image fica self-contained:
+**Confirmado:** moby-dick hoje só usa `container.get_archive(SARIF_OUTPUT_PATH)` pra extrair `/tmp/scan.sarif.json` do container — é Docker-only de fato pra qualquer um dos 4 scanners, exatamente como o plano original previa.
 
-1. `git clone` do código
-2. `sonar-scanner` faz upload
-3. `curl` em `/api/issues/search` (mesma rede `aspm-net`)
-4. Converte resposta para SARIF v2.1.0
-5. Escreve `/tmp/scan.sarif.json`
-
-moby-dick passa a usar `container.get_archive("/tmp/scan.sarif.json")` para extrair o arquivo, sem nunca falar com Sonar.
-
-**Por quê mudar:**
-- **Decisão §5 efetivamente preservada** — moby-dick volta a ser Docker-only. Não conhece Sonar API, formato, nem URL.
-- **Decisão §12 (SARIF) reforçada na fronteira certa** — scanner image é dona do "como gerar SARIF". moby-dick e pequod só veem SARIF puro.
-- **Onboarding de novo scanner = só build de image.** Semgrep tem `--sarif` nativo: `semgrep --sarif --output /tmp/scan.sarif.json`. Zero código novo em moby-dick/pequod.
-- **Resolve o problema de DNS de graça** — container já está em `aspm-net`, então `aspm-sonarqube:9000` resolve nativamente. moby-dick não precisa expor Sonar em rota acessível pelo host.
-
-**Trade-off aceito:**
-- `entrypoint.sh` do `sonar-runner` cresce (~15 linhas: curl + jq/python p/ converter)
-- moby-dick `docker_runner` precisa de método `extract_file(container, path)` usando `get_archive` + parsing de tar in-memory
-- `SARIF` no Kafka pode ser grande (10-100 KB); particionar `findings.raw` por `repo_id` e considerar compactação no producer (`compression_type="gzip"`) quando virar problema
-
-**Plano de migração:**
-1. `moby-dick/deploy/sonar-runner/entrypoint.sh` — adiciona steps 3-5 acima
-2. `moby-dick/diplomat/runner/docker_runner.py` — `RunResult.sarif: Optional[Dict]`; método auxiliar pra extrair arquivo
-3. `moby-dick/controller/job_controller.py` — `_publish_findings` lê `result.sarif` (sem chamar Sonar API)
-4. **Deletar** `moby-dick/adapter/sonar/issues_to_sarif.py`
-
-**Quando revisitar:** se SARIF cru passar de ~500 KB consistentemente (re-pensar persistência de SARIF cru em S3/MinIO).
+**Consequência prática já observada:** os 3 scanners novos (semgrep/trivy/zap) chegaram sem tocar em moby-dick nem pequod, confirmando a tese central desta decisão.
 
 ---
 
 ## 12. SARIF como formato comum de finding no pipeline
 
-**Decisão:** todo finding que entra em `findings.raw` é normalizado em SARIF v2.1.0 (OASIS) antes de publicar no Kafka. Pequod consome SARIF e converte pra `Finding v1`.
-
-**Por quê:**
-- Padrão de mercado — GitHub Code Scanning, Microsoft, Semgrep, CodeQL, Trivy emitem SARIF nativo.
-- Scanner-agnostic — adicionar 2º/3º scanner (Semgrep, Trivy) não muda contrato de `findings.raw` nem código do pequod.
-- Spec estável, JSON, bem documentado.
-
-**Trade-off aceito:**
-- SonarQube **não emite SARIF nativo** — precisa adapter (§11) que converte `/api/issues/search` → shape SARIF.
-
-**Alternativas descartadas:**
-- Shape próprio "finding_raw_v1" — perde interoperabilidade com tooling existente.
-- Passar resposta Sonar crua adiante — acopla pequod ao formato Sonar; quebra com Semgrep depois.
+Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
 ## 13. `SONAR_PROJECT_KEY` derivado de `github.repository.id`
 
-**Decisão:** captain-hook usa `f"gh_{repository.id}"` como `SONAR_PROJECT_KEY` (inteiro estável vindo do payload do webhook), não mais `f"{owner}_{repo}"`.
-
-**Por quê:**
-- `repository.id` é imutável — sobrevive a rename, transfer entre orgs.
-- Sanitização garantida — `gh_<int>` sempre bate na regex `[a-zA-Z0-9:\-_.]+` que Sonar exige.
-- Pequod ganha `repo_id` como chave estável de dedup.
-
-**Trade-off aceito:**
-- `gh_847291` não é legível no Sonar UI. Mitigação: `sonar.projectName="OdinEye-FIAP/clint-eastwood"` (label humano, key estável).
-- Migração de repos já onboardados: precisa renomear projeto no Sonar via `/api/projects/update_key`.
+Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
-## 14. Pequod como source-of-truth de findings (substitui sonar-db a longo prazo)
+## 14. Pequod como source-of-truth de findings (status: **realizado**, não é mais só intenção)
 
-**Intenção (não migração ainda):** o `pequod` é desenhado pra eventualmente **substituir o papel do `sonar-db` como repositório autoritativo de findings da organização**. UI de triagem, integrações de IA, métricas e workflows consumirão o pequod, não o Sonar UI.
+**Intenção original:** o `pequod` eventualmente substituiria o papel do `sonar-db` como repositório autoritativo.
 
-**Importante — o que isso NÃO significa:**
-- ❌ Não vamos remover o `sonar-db`. SonarQube Community Build exige postgres externo (§2). Sem ele o scanner não roda.
-- ❌ Não estamos competindo com o Sonar UI pra inspeção pontual de issues. Quem quiser olhar issue isolada pode continuar usando.
+**Status atual:** confirmado — toda integração nova (heimdall-dashboard, tars-ai, quality gate) consulta o pequod via REST, nunca o Sonar UI ou `sonar-db` diretamente. `sonar-db` continua existindo (Sonar Community exige postgres externo — §2), mas seu papel de "scratch interno do scanner" já é a realidade operacional, não mais uma meta.
 
-**O que significa:**
-- ✅ O `sonar-db` vira **scratch interno** do scanner — espaço de trabalho transitório, não fonte de consulta organizacional.
-- ✅ `pequod` é a base canônica: dedup por `(fingerprint, repo_id)`, histórico de status (open/triaged/false_positive/resolved), retenção controlada por nós.
-- ✅ Toda integração nova (UI, ai-triage, notifier, métricas) consulta pequod. Sonar UI fica para troubleshooting do scanner.
+**Nota de correção de fingerprint:** o texto original desta decisão descrevia dedup por `(fingerprint, repo)` com fingerprint sobre `scanner+rule+repo+file+line+snippet`. O código real (`pequod/model/finding.py::compute_fingerprint`) usa **`repo_id`** (não `repo`) e uma identidade estruturada de `location` que varia por `location_type` — não uma tupla fixa. Constraint real: `UNIQUE (fingerprint, repo_id)`. Ver [Finding v1](../reference/finding-v1.md) para o algoritmo completo.
+
+---
+
+## 15. Quality Gate com `scope=pr` e `scope=branch` (Security Baseline) — nova
+
+**Decisão:** todo `quality_gate_runs` no pequod tem um `scope`: `pr` (padrão, exige `pull_request_number`) ou `branch` (Security Baseline — avaliação contínua da default branch, exige `branch_name`). Os dois campos são mutuamente exclusivos por constraint no banco.
 
 **Por quê:**
-- `sonar-db` é schema fechado do Sonar — não podemos adicionar coluna `status`, `triage_notes`, `enrichment_ai_*` sem quebrar update do Sonar.
-- Multi-scanner exige store unificado (§12 SARIF). `sonar-db` por definição só sabe Sonar.
-- Backup, retenção, compliance: querer manter findings por 2 anos vs configuração padrão do Sonar é luta perdida — controlar `pequod` é trivial.
-- Triagem manual via `PATCH /findings/{id}` precisa de schema que aceite estados além dos que o Sonar suporta nativamente.
+- PRs cobrem o delta de código novo; a Security Baseline cobre o estado atual da `main` sem depender de um push acontecer.
+- captain-hook (`controller/push_controller.py`) dispara o baseline em `push` na default branch, publicando job com `scope=branch`; moby-dick (`baseline_issue_sink_enabled`) agrega o resultado numa Issue do GitHub no repo alvo.
+- Só é mantido 1 run "vigente" por PR (ou por branch) — novos commits/pushes substituem a run anterior.
 
-**Trade-off aceito:**
-- Duplicação temporária de findings (vivem no `sonar-db` interno do Sonar **e** no `pequod`). Storage barato, OK no MVP.
-- Sonar UI mostra dados que podem divergir do pequod após triagem manual (ex: dev marca como `false_positive` no pequod, Sonar continua acusando). Documentar bem: **fonte de verdade é o pequod**, Sonar UI é para inspecionar o scan.
+**Ainda em aberto:** gatilho de baseline automático no *onboarding* de um repositório novo (hoje o gatilho é só `push`; não há disparo no momento em que o repo é cadastrado). Ver TODO do monorepo.
 
-**Caminhos futuros considerados:**
-- Trocar Sonar por scanner stateless (Semgrep, Trivy) que não exige DB próprio → `sonar-db` desaparece.
-- Manter Sonar como engine de análise mas reduzir retenção do `sonar-db` ao mínimo (último scan por projeto).
-- API gateway sobre pequod servir como "Sonar UI substituto" pra consultas organizacionais.
+---
 
-**Quando revisitar:** ao bootstrar UI de triagem OU ao adicionar 2º scanner (revalidar a tese de pequod-as-SoT antes de assumi-la).
+## 16. Quality Gate síncrono via REST entre moby-dick e pequod — nova
+
+**Decisão:** a cada scanner concluído, moby-dick chama `POST /internal/quality-gates/{workflow_id}/evaluate` no pequod (síncrono, `X-Service-Token`), em vez de depender só de round-trip assíncrono via Kafka.
+
+**Por quê:**
+- Elimina race condition entre o consumer Kafka do pequod e o retorno do container do scanner.
+- Decisão do Quality Gate fica determinística e testável (chamada HTTP idempotente) em vez de depender de ordenação de mensagens.
+- O tópico Kafka `quality-gate.evaluated.v1` continua existindo como rede de segurança (publicado quando o gate finaliza sem nenhuma chamada HTTP em andamento), não como caminho principal.
+
+**Trade-off aceito:** acopla moby-dick e pequod por disponibilidade HTTP direta, além do Kafka.
+
+---
+
+## 17. TARS AI consome o pequod via REST (polling), não via tópico Kafka dedicado — nova
+
+**Decisão:** a triagem por IA (TARS AI) não tem tópico Kafka próprio (`ai.enrichments.triage`, previsto na versão anterior deste documento, nunca foi criado). Em vez disso, TARS AI faz *polling* REST contra o pequod (`TARS_PEQUOD_INTEGRATION_ENABLED=true`): busca pendências (`/integrations/tars/pending-findings`, `/pending-clusters`, `/semantic-candidates`) e submete vereditos (`/finding-analyses`, `/cluster-analyses`, `/semantic-clustering-decisions`).
+
+**Por quê:**
+- Evita acoplar o schema de enrichment de IA ao barramento de eventos — TARS AI pode rodar em ciclo próprio (`TARS_AUTO_ANALYZE_INTERVAL_SECONDS`), sem exigir consumer group dedicado nem lidar com replay/DLQ de Kafka.
+- Provider de IA em uso: Gemini (`gemini-2.5-flash`), com `groq` e `huggingface` disponíveis via factory.
+
+**Trade-off aceito:** latência de polling (não é enrichment em tempo real por evento).
+
+---
+
+## 18. Heimdall Dashboard como única UI, 100% via REST — nova
+
+**Decisão:** o frontend (`heimdall-dashboard`, React/Vite/TS) não acessa nenhum banco nem Kafka diretamente. Fala com 3 backends via HTTP: pequod (governança/quality gate/riscos), TARS AI (análises de IA) e captain-hook (live-info de repositório + scaffold de PR).
+
+**Por quê:** mantém o frontend como camada puramente de apresentação — qualquer mudança de schema é isolada nos serviços de backend.
 
 ---
 
@@ -261,9 +199,19 @@ moby-dick passa a usar `container.get_archive("/tmp/scan.sarif.json")` para extr
 
 ## Open questions
 
-- Onde mora a configuração por repo (`.aspm.yml`?) quando precisarmos rotear scanners diferentes
-- Estratégia de retenção quando agregador entrar
-- Métricas / observability formal (Prometheus? OTEL?)
+- Onde mora a configuração por repo (`.aspm.yml`?) quando precisarmos rotear scanners diferentes por projeto (hoje é tudo por env var global, `ENABLE_*_SCAN`)
+- Gatilho de Security Baseline no onboarding de repositório (§15 — hoje só dispara em `push`)
+- Estratégia de retenção de SARIF cru agora que o pequod é o agregador (`sarif_raw` já foi removido como coluna persistida no schema — recomposto via `finding_occurrences.raw_payload`)
+- Métricas / observability formal (Prometheus? OTEL?) — moby-dick já expõe `GET /metrics/quality-gate`, mas não em formato Prometheus, e os outros serviços não têm métricas expostas
 - Plataforma definitiva pra prod (continuar VPS? K8s? Railway?)
+- Auth de usuário final do heimdall-dashboard (hoje não há OAuth/JWT de usuário — só tokens de serviço entre backends)
 
-Atualizar este documento quando uma dessas virar decisão.
+**Resolvido desde a última revisão (2026-09-10):**
+- ~~Storage central de findings~~ → pequod, com governança completa (§4)
+- ~~2º/3º scanner~~ → semgrep, trivy e zap já ativos além do Sonar (§1)
+- ~~Extração de findings dentro da scanner image~~ → concluído (§11)
+- ~~Enriquecimento por IA~~ → TARS AI, via REST contra pequod (§17)
+- ~~Correlação cross-scanner~~ → candidate clustering determinístico no pequod + clustering semântico no TARS AI
+- ~~UI de triagem~~ → heimdall-dashboard (§18)
+
+Atualizar este documento quando uma das perguntas abertas virar decisão.
