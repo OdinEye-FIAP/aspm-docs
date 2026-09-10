@@ -129,7 +129,7 @@ flowchart LR
 
   GH -->|pull_request opened/synchronize/reopened| CH
   GH -->|push na default branch| CH
-  GH -->|ping / installation(_repositories)| CH
+  GH -->|"ping / installation(_repositories)"| CH
   HD -->|GET live-info / POST scaffold-pr| CH
   CH -->|publish jobs.orchestration N scanners + quality-gate.workflow.started.v1| K
 ```
