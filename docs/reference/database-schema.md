@@ -238,6 +238,7 @@ erDiagram
         text false_positive_likelihood
         numeric confidence
         text reasoning_short
+        text model_name
     }
     finding_cluster_member {
         uuid id PK
@@ -340,7 +341,9 @@ erDiagram
         uuid scan_id FK
         text alert_type
         text severity
-        text status
+        text title
+        jsonb payload
+        timestamptz resolved_at
     }
     risk_exceptions {
         uuid id PK
@@ -367,8 +370,7 @@ erDiagram
         uuid scan_id FK
         text status
         text decision
-        int total_findings
-        int total_clusters
+        jsonb summary
     }
     security_gate_items {
         uuid id PK
@@ -386,6 +388,8 @@ erDiagram
         text workflow_id
         text repository_id
         bigint pull_request_number
+        text branch_name
+        text scope
         text head_sha
         text status
         text decision
@@ -438,6 +442,8 @@ erDiagram
         text impact
         text recommendation
         text ai_action
+        bigint github_issue_number
+        text github_issue_url
     }
     consolidated_risk_candidate {
         uuid risk_id FK
@@ -530,7 +536,10 @@ Tabela de referência com toda foreign key do schema: tabela de origem, coluna, 
 ### `finding`
 Vulnerabilidade normalizada (contrato [Finding v1](finding-v1.md)), deduplicada por `fingerprint` + `repo_id`. É o registro canônico de uma ocorrência de scanner após ingestão.
 
-Colunas principais: `fingerprint`, `scanner`, `scanner_class`, `rule_id`, `severity`, `repo`/`repo_id`/`ref`, `file_path`/`line_start`/`line_end`, `location_type`/`location` (jsonb), `evidence`/`properties` (jsonb, dados brutos do scanner), `status` (`open`/...), `application_id`, `tool_id`, `sarif_raw` (auditoria).
+Colunas principais: `fingerprint`, `scanner`, `scanner_class`, `rule_id`, `severity`, `repo`/`repo_id`/`ref`, `file_path`/`line_start`/`line_end`, `location_type`/`location` (jsonb), `evidence`/`properties` (jsonb, dados brutos do scanner), `status` (`open`/...), `application_id`, `tool_id`.
+
+!!! warning "`sarif_raw` não é mais coluna de `finding`"
+    A coluna foi removida do schema. O JSON completo do result SARIF só é preservado em `finding_occurrences.raw_payload` (uma linha por ocorrência/scan). O endpoint legado `GET /findings/{id}` continua devolvendo um campo `sarif_raw` — mas ele é **recomposto em tempo de leitura** por uma subquery que busca `raw_payload` da ocorrência mais recente (`ORDER BY observed_at DESC, created_at DESC LIMIT 1`), não um valor persistido em `finding`.
 
 ### `finding_ai_analysis`
 Análise de IA 1:1 por finding individual (`finding_id` UNIQUE). Colunas: `recommendation`, `priority`, `confidence`, `model_name`.
@@ -573,7 +582,10 @@ Identificadores externos associados a um finding (ex: CVE, CWE). Colunas: `findi
 ## Governança operacional
 
 ### `alerts`
-Notificação (ex: Slack/webhook) gerada para um finding/cluster/scan. Colunas: `application_id`, `finding_id`/`cluster_id`/`scan_id` (nullable), `alert_type`, `severity`, `title`/`message`, `status` (`pending`→`sent`/`failed`/`acknowledged`/`resolved`/...), `delivery_channel`/`destination`, `deduplication_key`, `attempts`/`max_attempts`/`next_retry_at`.
+Notificação (ex: Slack/webhook) gerada para um finding/cluster/scan. Colunas: `application_id`, `finding_id`/`cluster_id`/`scan_id` (nullable), `alert_type`, `severity`, `title`/`message`, `deduplication_key`, `payload` (jsonb — payload específico do canal de entrega), `resolved_at`.
+
+!!! warning "Não existe coluna `status` em `alerts`"
+    Um alerta é considerado **aberto** enquanto `resolved_at IS NULL`, e **resolvido** quando `resolved_at` é preenchido — não há enum `status` (`pending`/`sent`/`failed`/...), nem colunas de canal de entrega/retry (`delivery_channel`, `destination`, `attempts`, `max_attempts`, `next_retry_at`). O filtro `GET /api/v1/alerts?resolved=` da API mapeia para `(resolved_at IS NULL) = NOT resolved`.
 
 ### `audit_log`
 Log de auditoria append-only (triggers bloqueiam UPDATE/DELETE). Colunas: `application_id`, `entity_type`/`entity_id`, `action`, `actor_type`/`actor_id`/`actor_name`, `previous_data`/`new_data` (jsonb), `correlation_id`/`request_id`.
@@ -587,7 +599,10 @@ Exceção de risco aceita/suprimida para um finding OU cluster (nunca ambos). Co
 Política de bloqueio configurável (global ou por `application_id`). Colunas: `name`, `version`, `is_active`, `policy_mode` (`blocking`/`monitoring`), `rules` (jsonb).
 
 ### `security_gate_evaluations`
-Avaliação de uma policy contra um conjunto de findings/clusters de um scan/PR. Colunas: `application_id`, `policy_id`, `scan_id`, `ref_type`/`ref`/`commit_sha`, `status`, `decision` (`passed`/`failed`/`warning`/`error`), `total_findings`/`total_clusters`, `blocking_items`/`warning_items`/`ignored_items`, `summary` (jsonb).
+Avaliação de uma policy contra um conjunto de findings/clusters de um scan/PR. Colunas persistidas: `application_id`, `policy_id`, `scan_id`, `external_evaluation_id`, `ref_type`/`ref`/`commit_sha`, `status`, `decision` (`passed`/`failed`/`warning`/`error`), `summary`/`metadata` (jsonb), `started_at`/`finished_at`.
+
+!!! warning "`total_findings`/`total_clusters`/`blocking_items`/`warning_items`/`ignored_items` não são colunas"
+    São contadores calculados em tempo de leitura por subqueries `COUNT(*) FILTER (...)` sobre `security_gate_items` (`diplomat/db/rest_query_repo.py`, `_EVALUATION_ITEM_COUNTS`), e só aparecem no JSON de `GET /api/v1/security-gate/evaluations*` — nunca persistidos na tabela.
 
 ### `security_gate_items`
 Item individual avaliado dentro de uma `security_gate_evaluations` — aponta para um `finding` OU `cluster` (nunca ambos), ou é `aggregate`/`system`. Colunas: `evaluation_id`, `finding_id` xor `cluster_id`, `risk_exception_id`, `item_type` (`finding`/`cluster`/`aggregate`/`system`), `decision` (`passed`/`failed`/`warning`/`ignored`/`error`), `reason`.
@@ -595,7 +610,9 @@ Item individual avaliado dentro de uma `security_gate_evaluations` — aponta pa
 > Nota: `item_type`/campos `cluster_*` aqui referenciam o `finding_cluster` (agrupamento pré-IA), não o `consolidated_risk` — nomenclatura pendente de alinhamento (ver item de backlog sobre renomear `finding_cluster`/`candidate_cluster` no backend).
 
 ### `quality_gate_runs`
-Execução do Quality Gate para um PR (1 run "vigente" por PR — novos commits substituem a run anterior). Colunas: `application_id`, `workflow_id` (UNIQUE), `delivery_id`, `repository_id`/`repository_full_name`, `pull_request_number`, `head_sha`/`head_ref`/`base_ref`, `expected_scanners` (jsonb array), `status` (`pending`→`running`→`evaluating`→`completed`/`failed`/`cancelled`/`timed_out`), `decision`, `evaluation_id` (FK para `security_gate_evaluations`).
+Execução do Quality Gate para um Pull Request (`scope='pr'`, exige `pull_request_number`) **ou** para uma branch fora do contexto de PR (`scope='branch'`, Security Baseline — ex.: avaliação contínua de `main`, exige `branch_name`). Os dois campos são mutuamente exclusivos por constraint. Só é mantido 1 run "vigente" por PR (ou por branch, quando `scope='branch'`) — novos commits/pushes substituem a run anterior (reset semantics), sem manter histórico de runs obsoletos.
+
+Colunas: `application_id` (nullable), `workflow_id` (UNIQUE), `delivery_id`, `source` (default `github`), `repository_id`/`repository_full_name`, `installation_id`, `pull_request_number`, `head_sha`/`head_ref`/`base_ref`, `branch_name`, `scope` (`pr`/`branch`), `expected_scanners` (jsonb array), `status` (`pending`→`running`→`evaluating`→`completed`/`failed`/`cancelled`/`timed_out`), `decision`, `evaluation_id` (FK para `security_gate_evaluations`).
 
 ### `quality_gate_scanner_runs`
 Execução de um scanner específico dentro de um `quality_gate_runs` (1 por scanner por run). Colunas: `quality_gate_run_id`, `scanner`/`scanner_class`, `job_id` (UNIQUE), `scan_id`, `status`, `findings_count`, `error_code`/`error_message`.
@@ -608,7 +625,7 @@ Registro da decisão da IA (`propose_semantic_clustering`) sobre um conjunto de 
 ### `consolidated_risk`
 **O risco consolidado exibido ao usuário final** — resultado de uma decisão de IA (`merge`/`keep`/`split`) ou de auto-attach determinístico. É essa tabela que o heimdall-dashboard renderiza como "Riscos consolidados" (via `ConsolidatedRiskApiItem` → `RiskAnalysis` no front).
 
-Colunas: `decision_id` (FK para `semantic_clustering_decision`), `application_id`, `repo`/`repo_id`/`ref`, `canonical_title`/`canonical_category`, `technical_severity`, `priority`, `false_positive_likelihood`, `confidence`, `summary`/`impact`/`recommendation`/`reasoning`, `ai_action` (`merge`/`keep`/`split`), `model_name`.
+Colunas: `decision_id` (FK para `semantic_clustering_decision`), `application_id`, `repo`/`repo_id`/`ref`, `canonical_title`/`canonical_category`, `technical_severity`, `priority`, `false_positive_likelihood`, `confidence`, `summary`/`impact`/`recommendation`/`reasoning`, `ai_action` (`merge`/`keep`/`split`), `model_name`, `github_issue_number`/`github_issue_url` (preenchidos quando uma issue do GitHub é criada a partir do risco consolidado).
 
 ### `consolidated_risk_candidate`
 Relação N:N entre `consolidated_risk` e `finding_cluster` — quais clusters técnicos foram consolidados em qual risco. PK composta `(risk_id, cluster_id)`.
@@ -629,12 +646,12 @@ Quality Gate (N scanners) → findings.raw (Kafka) → finding (ingestão)
                                               finding_cluster
                                        (+ finding_cluster_member)
                                                         │
-                              ┌─────────────────────────┴─────────────────────────┐
+                              ┌─────────────────────────────┴─────────────────────────────┐
                               ▼                                                     ▼
                  auto-attach determinístico                          IA: propose_semantic_clustering
               (find_risk_by_target_on_connection)                      (merge / keep / split)
                               │                                                     │
-                              └─────────────────────────┬─────────────────────────┘
+                              └─────────────────────────────┬─────────────────────────────┘
                                                         ▼
                                             semantic_clustering_decision
                                                         │

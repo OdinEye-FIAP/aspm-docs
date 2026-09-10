@@ -6,13 +6,13 @@ Catálogo dos endpoints expostos por cada serviço. Onde aplicável, link pro Sw
 
 ### `POST /webhook`
 
-**Função:** receber webhooks do GitHub.
+**Função:** receber webhooks do GitHub (`pull_request`, `push`, `ping`, `installation`, `installation_repositories`).
 
 **Headers esperados:**
 
 | Header | Obrigatório | Uso |
 |---|---|---|
-| `X-GitHub-Event` | sim | `pull_request`, `ping`, etc |
+| `X-GitHub-Event` | sim | `pull_request`, `push`, `ping`, `installation`, `installation_repositories` |
 | `X-GitHub-Delivery` | sim | UUID único do delivery |
 | `X-Hub-Signature-256` | sim | HMAC-SHA256 do payload com `GITHUB_WEBHOOK_SECRET` |
 | `Content-Type` | sim | `application/json` |
@@ -31,7 +31,9 @@ Catálogo dos endpoints expostos por cada serviço. Onde aplicável, link pro Sw
 **Side effects:**
 
 1. Publica em `github.events.raw` (sempre)
-2. Se for `pull_request.{opened,synchronize,reopened}`, publica também em `jobs.orchestration`
+2. Se for `pull_request.{opened,synchronize,reopened}`, publica jobs em `jobs.orchestration` (`scope=pr`) — um por scanner habilitado
+3. Se for `push` na default branch, publica jobs em `jobs.orchestration` (`scope=branch`, Security Baseline)
+4. Se for `installation`/`installation_repositories`, publica em `repository.registered.v1`/`repository.unregistered.v1`
 
 **Exemplo:**
 
@@ -54,7 +56,13 @@ curl -X POST http://localhost:8080/webhook \
 {"status": "ok"}
 ```
 
-Sempre 200. Não checa dependências (Kafka). Pra readiness real, expandir no futuro.
+### `GET /repos/{owner}/{repo}/live-info`
+
+**Função:** issues abertas e dependências ao vivo de um repositório (usado pelo heimdall-dashboard). Requer CORS liberado via `CORS_ALLOWED_ORIGINS`.
+
+### `POST /repos/{owner}/{repo}/scaffold-pr`
+
+**Função:** dispara manualmente a abertura do PR de onboarding (scaffold) para um repositório, sem esperar o evento automático de `installation`.
 
 ### Swagger UI
 
@@ -74,15 +82,21 @@ http://localhost:8080/openapi.json — spec cru.
 {"status": "ok"}
 ```
 
-### Background consumer
+### `GET /metrics/quality-gate`
 
-moby-dick **não** expõe endpoint de scan (não há "POST /scan"). Toda atividade é triggered por consumo de `jobs.orchestration`.
+**Função:** snapshot de métricas do orquestrador do Quality Gate (não é formato Prometheus).
+
+### Background consumers
+
+moby-dick **não** expõe endpoint de scan (não há "POST /scan"). Toda atividade é triggered por consumo de `jobs.orchestration` (scan) e `quality-gate.scanner.completed.v1` (fallback assíncrono do quality gate) — o caminho principal do quality gate é a chamada síncrona que o próprio moby-dick faz ao pequod (`POST /internal/quality-gates/{workflow_id}/evaluate`), não um endpoint que moby-dick expõe.
 
 ### Swagger UI
 
-http://localhost:9090/docs — só `/health` por enquanto. Endpoints HTTP adicionais virão se decidirmos expor API de listagem de jobs em execução.
+http://localhost:9090/docs
 
 ## pequod (porta 7070)
+
+Prefixo versionado: `/api/v1`. Rotas legadas (`/findings*`) e as de integração service-to-service (`/integrations/tars/*`, `/internal/quality-gates/*`) não usam esse prefixo.
 
 ### `GET /health`
 
@@ -94,82 +108,142 @@ http://localhost:9090/docs — só `/health` por enquanto. Endpoints HTTP adicio
 {"status": "ok", "db": "ok"}
 ```
 
-### `GET /findings`
+### `GET /metrics/quality-gate`
 
-**Função:** listar findings paginados com filtros.
+**Função:** snapshot de métricas do orquestrador do Quality Gate.
 
-**Query params:**
+### Findings (legado — mantido por compatibilidade)
 
-| Param | Tipo | Default | Uso |
-|---|---|---|---|
-| `repo` | str | — | filtra por repo (ex: `OdinEye-FIAP/clint-eastwood`) |
-| `severity` | str | — | `critical`, `major`, `minor`, `info` |
-| `status` | str | — | `open`, `triaged`, `resolved`, `false_positive` |
-| `limit` | int | 50 | máximo de resultados |
-| `offset` | int | 0 | offset pra paginação |
+| Método | Path | Função |
+|---|---|---|
+| `GET` | `/findings` | lista paginada (filtros: `repo`, `repo_id`, `severity`, `status`) |
+| `GET` | `/findings/{finding_id}` | detalhe (recompõe `sarif_raw` a partir da ocorrência mais recente em `finding_occurrences`) |
+| `PATCH` | `/findings/{finding_id}` | atualiza `status` (`open`/`triaged_fp`/`fixed`/`wontfix`) |
 
-**Response:**
+### Organizations / Applications / Scans
 
-```json
-{
-  "items": [
-    {
-      "id": "uuid",
-      "fingerprint": "sha256...",
-      "scanner": "sonarqube",
-      "rule_id": "javascript:S2068",
-      "severity": "critical",
-      "repo": "OdinEye-FIAP/clint-eastwood",
-      "ref": "4b743b61...",
-      "file_path": "security-issues.js",
-      "line_start": 12,
-      "line_end": 12,
-      "message": "Hardcoded credentials detected",
-      "status": "open",
-      "first_seen_at": "2026-06-23T14:30:00Z",
-      "last_seen_at": "2026-06-25T09:12:00Z"
-    }
-  ],
-  "total": 42
-}
-```
-
-### `GET /findings/{finding_id}`
-
-**Função:** detalhe de um finding (inclui `sarif_raw`).
-
-**Response:** mesmo schema do item de `/findings` + campo `sarif_raw` (JSON do SARIF result original).
-
-| Status | Quando |
+| Método | Path |
 |---|---|
-| `200 OK` | finding encontrado |
-| `404 Not Found` | id inexistente |
+| `GET` | `/api/v1/organizations` |
+| `GET` | `/api/v1/applications` |
+| `GET` | `/api/v1/applications/{application_id}` |
+| `GET` | `/api/v1/applications/{application_id}/scans` |
+| `GET` | `/api/v1/scans/{scan_id}` |
 
-### `PATCH /findings/{finding_id}`
+### Risk Exceptions
 
-**Função:** atualizar `status` (triage manual).
+| Método | Path |
+|---|---|
+| `GET` | `/api/v1/risk-exceptions` |
+| `POST` | `/api/v1/risk-exceptions` |
+| `POST` | `/api/v1/risk-exceptions/expire` |
+| `GET` | `/api/v1/risk-exceptions/{exception_id}` |
+| `POST` | `/api/v1/risk-exceptions/{exception_id}/revoke` |
 
-**Body:**
+### Alerts
 
-```json
-{ "status": "false_positive" }
-```
+| Método | Path |
+|---|---|
+| `GET` | `/api/v1/alerts` |
+| `GET` | `/api/v1/alerts/{alert_id}` |
 
-`status` válidos: `open`, `triaged`, `resolved`, `false_positive`.
+### Audit Log
 
-**Response:** finding atualizado (mesmo schema do GET).
+| Método | Path |
+|---|---|
+| `GET` | `/api/v1/audit-logs` |
+| `GET` | `/api/v1/audit-logs/{audit_log_id}` |
 
-### Background consumer
+### Security Gate
 
-pequod **não** expõe endpoint de ingestão. Toda ingestão vem de `findings.raw` no Kafka.
+| Método | Path |
+|---|---|
+| `GET` | `/api/v1/security-gate/policies` |
+| `POST` | `/api/v1/security-gate/policies` |
+| `GET` | `/api/v1/security-gate/policies/effective` |
+| `GET` | `/api/v1/security-gate/evaluations` |
+| `POST` | `/api/v1/security-gate/evaluations` |
+| `GET` | `/api/v1/security-gate/evaluations/{evaluation_id}` |
+
+### Consolidated Risks
+
+| Método | Path |
+|---|---|
+| `GET` | `/api/v1/consolidated-risks` |
+| `GET` | `/api/v1/consolidated-risks/{risk_id}` |
+
+### Quality Gates
+
+| Método | Path | Função |
+|---|---|---|
+| `GET` | `/api/v1/quality-gates` | lista runs |
+| `GET` | `/api/v1/quality-gates/by-pr` | resolve o run mais recente por `application_id`+`pull_request_number` |
+| `GET` | `/api/v1/quality-gates/{workflow_id}` | detalhe completo (run, scanners, evaluation, policy, items, risk exceptions) |
+
+### `/integrations/tars/*` (service-to-service, header `X-Service-Token`)
+
+| Método | Path |
+|---|---|
+| `GET` | `/integrations/tars/capabilities` |
+| `GET` | `/integrations/tars/pending-findings` |
+| `POST` | `/integrations/tars/finding-analyses` |
+| `GET` | `/integrations/tars/pending-clusters` |
+| `POST` | `/integrations/tars/cluster-analyses` |
+| `GET` | `/integrations/tars/semantic-candidates` |
+| `POST` | `/integrations/tars/semantic-clustering-decisions` |
+
+### `/internal/quality-gates/*` (service-to-service, header `X-Service-Token`)
+
+| Método | Path | Função |
+|---|---|---|
+| `POST` | `/internal/quality-gates/{workflow_id}/evaluate` | chamado pelo moby-dick a cada scanner concluído; resposta síncrona `{ready, event}` (idempotente) |
 
 ### Swagger UI
 
-http://localhost:7070/docs — FastAPI auto-gera todos os endpoints com schemas Pydantic (`Finding v1`, `FindingsRawEvent`).
+http://localhost:7070/docs
+
+## tars-ai (porta 6060)
+
+Dois grupos de rotas coexistem no mesmo processo: as legadas (`/ai/*`, acesso direto ao banco do pequod) e as de integração REST (`/integrations/pequod/*`, sem acesso direto ao banco — controladas por `TARS_PEQUOD_INTEGRATION_ENABLED`).
+
+### `GET /health`
+
+```json
+{"status": "ok", "service": "tars_ai", "ai_provider": "gemini", "auto_analyze_enabled": true, "auto_analyze_interval_seconds": 60}
+```
+
+### Legado (`/ai/*`)
+
+| Método | Path | Função |
+|---|---|---|
+| `GET` | `/ai/pending` | findings pendentes de análise |
+| `GET` | `/ai/pending-refs` | grupos `repo`/`ref` com pendências |
+| `POST` | `/ai/analyze-pending` | analisa findings pendentes |
+| `POST` | `/ai/analyze-ref` | analisa findings pendentes de um `repo`+`ref` |
+| `POST` | `/ai/analyze/{finding_id}` | analisa um finding específico |
+| `GET` | `/ai/analyses` | lista análises individuais |
+| `GET` | `/ai/stats` | totais ingeridos vs. enriquecidos |
+| `POST` | `/ai/clusterize-pending` | clustering determinístico legado |
+| `GET` | `/ai/clusters` / `/ai/clusters/{cluster_id}` | lista/detalhe de clusters |
+| `POST` | `/ai/analyze-clusters` | analisa clusters pendentes |
+| `GET` | `/ai/cluster-analyses` | lista análises de clusters |
+
+### Integração REST (`/integrations/pequod/*`)
+
+| Método | Path | Função |
+|---|---|---|
+| `GET` | `/integrations/pequod/health` | healthcheck do pequod + provider ativo |
+| `POST` | `/integrations/pequod/analyze-findings` | busca `pending-findings` no pequod e submete `finding-analyses` |
+| `POST` | `/integrations/pequod/analyze-clusters` | busca `pending-clusters` no pequod e submete `cluster-analyses` |
+| `POST` | `/integrations/pequod/run` | ciclo completo (findings + clustering semântico); `409` se a integração estiver desabilitada |
+
+### Swagger UI
+
+http://localhost:6060/docs
 
 ## SonarQube (porta 9000) — referência externa
 
-Não fazemos chamadas custom — usamos só sonar-scanner CLI. Mas vale documentar endpoints úteis pra bootstrap e debug.
+Não fazemos chamadas custom de aplicação — apenas o `sonar-runner` chama a API do Sonar (dentro da própria image, ver [Decisão §11](../overview/decisions.md#7-modo-de-scan-análise-principal-sem-pr-mode)) pra extrair issues e converter em SARIF. Vale documentar endpoints úteis pra bootstrap e debug.
 
 ### `GET /api/system/status`
 
@@ -184,18 +258,18 @@ Não fazemos chamadas custom — usamos só sonar-scanner CLI. Mas vale document
 
 ### `POST /api/users/change_password`
 
-**Function:** trocar senha (necessário no primeiro login com admin/admin).
+**Função:** trocar senha (necessário no primeiro login com admin/admin).
 
 **Auth:** Basic Auth.
 
 **Body (form-urlencoded):**
 - `login=admin`
-- `previousPassword=admin`
-- `password=<nova>`
+- `previousPassword=********
+- `password=********
 
 ### `POST /api/user_tokens/generate`
 
-**Function:** gerar token de análise.
+**Função:** gerar token de análise.
 
 **Auth:** Basic Auth.
 
@@ -205,12 +279,12 @@ Não fazemos chamadas custom — usamos só sonar-scanner CLI. Mas vale document
 
 **Response:**
 ```json
-{"login":"admin","name":"...","token":"sqa_xxxxxxxx","createdAt":"...","type":"GLOBAL_ANALYSIS_TOKEN"}
+{"login":"admin","name":"...","token":"********","createdAt":"...","type":"GLOBAL_ANALYSIS_TOKEN"}
 ```
 
 ### `POST /api/projects/create`
 
-**Function:** criar projeto manualmente (Community Build não auto-cria).
+**Função:** criar projeto manualmente (Community Build não auto-cria).
 
 **Auth:** Basic Auth.
 
@@ -220,17 +294,19 @@ Não fazemos chamadas custom — usamos só sonar-scanner CLI. Mas vale document
 
 ### `GET /api/projects/search`
 
-**Function:** listar/buscar projetos.
+**Função:** listar/buscar projetos.
 
 **Query:** `q=<search>` (opcional).
 
 ### `GET /api/qualitygates/project_status`
 
-**Function:** consultar status do QG.
+**Função:** consultar status do QG.
 
 **Query:**
 - `projectKey=<key>`
-- `pullRequest=<n>` (opcional, só funciona em Developer Edition+)
+
+!!! warning "PR mode não funciona no Community Build"
+    O parâmetro `pullRequest=<n>` só funciona em SonarQube Developer Edition+. Community Build não suporta `sonar.pullrequest.*`/`sonar.branch.*` — ver [Decisão §7](../overview/decisions.md#7-modo-de-scan-análise-principal-sem-pr-mode). O `sonar-runner` roda sem essas flags por padrão (`SONAR_PR_MODE=disabled`).
 
 **Response:**
 ```json
@@ -250,7 +326,7 @@ Reference: https://docs.github.com/en/rest
 
 ### `POST /app/installations/{id}/access_tokens`
 
-**Function:** trocar JWT por installation token.
+**Função:** trocar JWT por installation token.
 
 **Auth:** JWT no header `Authorization: Bearer <jwt>`.
 
@@ -261,14 +337,14 @@ Reference: https://docs.github.com/en/rest
 
 ### `POST /repos/{owner}/{repo}/check-runs`
 
-**Function:** criar check_run no PR.
+**Função:** criar check_run no PR (nome real: "OdinEye / Quality Gate").
 
 **Auth:** installation token.
 
 **Body:**
 ```json
 {
-  "name": "SonarQube Scan",
+  "name": "OdinEye / Quality Gate",
   "head_sha": "<sha>",
   "status": "in_progress",
   "output": {
@@ -281,7 +357,7 @@ Reference: https://docs.github.com/en/rest
 
 ### `PATCH /repos/{owner}/{repo}/check-runs/{id}`
 
-**Function:** atualizar check_run com resultado.
+**Função:** atualizar check_run com resultado.
 
 **Body:**
 ```json
@@ -306,27 +382,4 @@ docker exec aspm-redpanda rpk group describe moby-dick
 
 ## Endpoints futuros previstos
 
-### pequod — evoluções planejadas
-
-| Endpoint | Função |
-|---|---|
-| `GET /findings/{id}/sarif` | SARIF cru extraído do `sarif_raw` |
-| `GET /repos/{repo}/summary` | métricas agregadas (contagem por severity/status) |
-| `POST /findings/import` | importar SARIF manualmente (re-ingest de scan antigo) |
-| `GET /findings/{id}/history` | histórico de mudanças de status |
-
-### policy-engine (futuro)
-
-| Endpoint | Função |
-|---|---|
-| `GET /policies` | listar políticas ativas |
-| `POST /policies/evaluate` | testar uma policy contra um job hipotético |
-
-### ai-triage (futuro)
-
-| Endpoint | Função |
-|---|---|
-| `POST /enrich/{finding_id}` | dispara classificação LLM e anexa ao finding |
-| `GET /enrichments/{finding_id}` | recupera enrichments do finding |
-
-Quando esses serviços nascerem, esta página será atualizada.
+Nenhuma evolução planejada documentada no momento. As entradas antigas desta seção (`GET /findings/{id}/sarif`, `GET /repos/{repo}/summary`, `POST /findings/import`, `GET /findings/{id}/history`, endpoints de policy-engine, endpoints de ai-triage) já foram implementadas — ver as seções [pequod](#pequod-porta-7070) e [tars-ai](#tars-ai-porta-6060) acima.

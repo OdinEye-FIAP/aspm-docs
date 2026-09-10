@@ -1,6 +1,6 @@
 # Captain-hook
 
-Ponto de entrada do GitHub: recebe webhooks, valida HMAC e publica `JobDescriptor v1` no Kafka (`jobs.orchestration`).
+Ponto de entrada do GitHub: recebe webhooks, valida HMAC e publica `JobDescriptor v1` no Kafka (`jobs.orchestration`). Também expõe endpoints HTTP síncronos consumidos diretamente pelo `heimdall-dashboard` e para disparo manual do auto-scaffold.
 
 ## Quick start
 
@@ -13,14 +13,54 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 ## Endpoints
 
-- `POST /webhook` — recebe webhooks do GitHub (PR opened/synchronize/reopened)
-- `GET /health` — liveness
-- `GET /docs` — Swagger
+| Método | Path | Descrição |
+|---|---|---|
+| `POST` | `/webhook` | recebe webhooks do GitHub (`ping`, `pull_request`, `push`, `installation`, `installation_repositories`) |
+| `GET` | `/health` | liveness |
+| `GET` | `/repos/{owner}/{repo}/live-info` | issues abertas + dependências (Dependency Graph/SBOM) do repositório, buscadas ao vivo no GitHub — sem persistência, sem publicar evento; consumido diretamente pelo `heimdall-dashboard` |
+| `POST` | `/repos/{owner}/{repo}/scaffold-pr` | dispara manualmente o auto-scaffold (PR sugerindo `docker-compose.aspm.yml` + lint config + workflow) para um repositório específico — necessário para repositórios registrados em massa via `installation`, que nunca recebem `ping` individual |
+| `GET` | `/docs` | Swagger |
+
+!!! note "CORS e live-info"
+    `/repos/{owner}/{repo}/live-info` é chamado diretamente do navegador pelo `heimdall-dashboard` na tela de Governança. As duas buscas (issues + dependências) rodam em paralelo e falham de forma independente. Origens permitidas via `CORS_ALLOWED_ORIGINS`.
+
+## Eventos do GitHub processados
+
+| Evento | Action(s) monitoradas | O que dispara |
+|---|---|---|
+| `ping` | — | registra o repositório no pequod (`repository.registered.v1`) e, em background, avalia o auto-scaffold (`ENABLE_REPO_SCAFFOLD_PR`) |
+| `pull_request` | `opened`, `synchronize`, `reopened` | inicia o **Quality Gate** (scope=`pr`): publica `quality-gate.workflow.started.v1` + 1 `JobDescriptor` por scanner habilitado em `jobs.orchestration` |
+| `push` | push na **default branch** do repositório | inicia o **Security Baseline** (scope=`branch`): mesma máquina do Quality Gate (`workflow.started` + `jobs.orchestration`), sem `SONAR_PULLREQUEST_*`/`base_ref` (full-branch scan) — ver `controller/push_controller.py` |
+| `installation` | `created`, `deleted` | registra/desregistra em massa todos os repositórios cobertos pela instalação da App — **nunca** dispara auto-scaffold (evitaria abrir dezenas de PRs simultâneos) |
+| `installation_repositories` | `added`, `removed` | idem, para mudança de escopo de repositórios de uma instalação já existente |
+
+Eventos sem processamento dedicado são logados e descartados — não fazem o webhook retornar erro.
+
+!!! warning "Push só dispara Security Baseline na default branch"
+    `adapter/wire_in/push_adapter.py::to_baseline_context` filtra estritamente `refs/heads/{repository.default_branch}`, ignora `deleted=true` e commits vazios. Push em feature branch, tag ou delete de branch não gera nenhum job. Ver também [onboarding de repositório](integration/onboarding-repo.md).
+
+## Scanners disparados
+
+Cada evento relevante (`pull_request` relevante ou `push` na default branch) monta uma lista de `JobDescriptor`, um por scanner habilitado, publicada em `jobs.orchestration`:
+
+| Scanner | Sempre ativo? | Feature flag (captain-hook) | `kind` |
+|---|---|---|---|
+| SonarQube | ✅ sempre | — | `sonar_scan` |
+| Semgrep SAST | opcional | `ENABLE_SEMGREP_SCAN` | `semgrep_scan` |
+| Trivy SCA | opcional | `ENABLE_TRIVY_SCAN` | `trivy_scan` |
+| OWASP ZAP DAST | opcional | `ENABLE_ZAP_SCAN` (+ `ZAP_TARGET_URL` obrigatório se `DAST_MODE=fixed_url`) | `zap_scan` |
+
+Cada scanner tem seu builder próprio em `adapter/wire_out/scanners/{sonar,semgrep,trivy,zap}_scanner.py`, com duas funções: `build_job` (scope=`pr`, chamado por `pull_request_controller`) e `build_baseline_job` (scope=`branch`, chamado por `push_controller`). Ver [Adicionar novo scanner](developer/adding-a-scanner.md) para o padrão completo.
+
+!!! tip "SONAR_PROJECT_KEY"
+    `SONAR_PROJECT_KEY` é sempre `f"gh_{repository.id}"`, montado em `adapter/wire_out/scanners/sonar_scanner.py` (`build_job`/`build_baseline_job`). `repository.id` é imutável no GitHub — sobrevive a rename/transfer. Ver [Decisão §13](overview/decisions.md#13-sonar_project_key-derivado-de-githubrepositoryid) e [JobDescriptor](reference/job-descriptor.md#convenção-sonar_project_key).
 
 ## Links
 
 - README completo: ../captain-hook/README.md
 - JobDescriptor: ../reference/job-descriptor.md
+- Onboarding de repositório: ../integration/onboarding-repo.md
+- Adicionar novo scanner: ../developer/adding-a-scanner.md
 
 ## Fluxo de dados
 
@@ -29,9 +69,13 @@ flowchart LR
   GH[GitHub Webhook]
   CH[captain-hook]
   K[(Kafka/Redpanda)]
+  HD[heimdall-dashboard]
 
-  GH -->|webhook (PR opened/synchronize)| CH
-  CH -->|publish jobs.orchestration| K
+  GH -->|pull_request opened/synchronize/reopened| CH
+  GH -->|push na default branch| CH
+  GH -->|ping / installation(_repositories)| CH
+  HD -->|GET live-info / POST scaffold-pr| CH
+  CH -->|publish jobs.orchestration N scanners + quality-gate.workflow.started.v1| K
 ```
 
 ![Fluxo de dados — Captain-hook](assets/captain-hook-flow.svg)

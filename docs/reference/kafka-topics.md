@@ -1,6 +1,6 @@
 # Tópicos Kafka
 
-Referência completa dos tópicos usados (e previstos) no pipeline.
+Referência completa dos tópicos usados no pipeline. Nomes confirmados em `config/settings.py` de captain-hook e moby-dick (2026-09-10).
 
 ## Cluster
 
@@ -14,53 +14,48 @@ Stack atual: **Redpanda** (Kafka-compatible), single-node, sem replicação. Rod
 | `localhost:8088` | Redpanda Console (UI) |
 
 !!! tip "UI pra debug"
-    Sempre tenha o Console aberto durante dev: http://localhost:8088 mostra tópicos, mensagens, consumer groups, lag.
+    http://localhost:8088 mostra tópicos, mensagens, consumer groups, lag.
 
 ## Tópicos ativos
 
 ### `github.events.raw`
 
-**Producer:** captain-hook
-**Consumer ativo:** nenhum (audit/replay)
-**Key:** `repo_full_name`
+**Producer:** captain-hook · **Consumer ativo:** nenhum (audit/replay) · **Key:** `repo_full_name`
 
-**Value schema:**
-```json
-{
-  "event_type": "pull_request",
-  "delivery_id": "12345678-90ab-cdef-1234-567890abcdef",
-  "payload": { ...payload bruto do webhook do GitHub... }
-}
-```
-
-**Propósito:**
-- Audit log do que entrou no sistema
-- Replay possível pra reprocessar eventos passados
-- Source-of-truth se o JobDescriptor v1 não tiver alguma info que precisamos depois
-
-**Retenção:** default Redpanda (7 dias). Aumentar se quiser auditar período maior.
+**Value:** `{event_type, delivery_id, payload}` — payload bruto do webhook do GitHub (`pull_request`, `push`, `installation`, `installation_repositories`, `ping`).
 
 ### `jobs.orchestration`
 
-**Producer:** captain-hook
-**Consumer:** moby-dick (consumer group `moby-dick`)
-**Key:** `repo_full_name`
+**Producer:** captain-hook · **Consumer:** moby-dick (`kafka_consumer_group=moby-dick`) · **Key:** `repo_full_name`
 
-**Value:** [`JobDescriptor v1`](job-descriptor.md) serializado.
+**Value:** [`JobDescriptor v1`](job-descriptor.md).
 
-**Propósito:** instrução pro orquestrador executar um job (rodar container scanner + reportar resultado).
+!!! warning "Não é mais 1 mensagem por PR"
+    Um único evento de PR (ou push na default branch) gera **uma mensagem por scanner habilitado** (Sonar sempre + Semgrep/Trivy/ZAP condicionados a `ENABLE_SEMGREP_SCAN`/`ENABLE_TRIVY_SCAN`/`ENABLE_ZAP_SCAN`). moby-dick roda até `SCANNER_MAX_CONCURRENCY=4` desses jobs em paralelo.
 
-**Particionamento:** key = `repo_full_name` garante ordem por repo, paralelismo entre repos.
+### `repository.registered.v1`
 
-**Retenção:** default (7 dias). Mensagens já consumidas não precisam ser revisitadas — moby-dick commit do offset.
+**Producer:** captain-hook · **Consumer:** pequod · **Key:** `repo_full_name`
+
+**Propósito:** registra um repositório no pequod quando o evento `installation`/`installation_repositories`/`ping` indica que ele passou a fazer parte do onboarding.
+
+### `repository.unregistered.v1`
+
+**Producer:** captain-hook · **Consumer:** pequod · **Key:** `repo_full_name`
+
+**Propósito:** baixa de repositório (ex: app desinstalado, repo removido da installation).
+
+### `quality-gate.workflow.started.v1`
+
+**Producer:** captain-hook · **Consumer:** moby-dick · **Key:** `repo_full_name`
+
+**Propósito:** sinaliza o início de um workflow de quality gate — usado tanto pelo fluxo de PR quanto pelo Security Baseline (`scope=branch`, disparado em `push` na default branch).
 
 ### `findings.raw`
 
-**Producer:** moby-dick (após scan: extrai issues da Sonar API → converte SARIF v2.1.0)
-**Consumer:** pequod (consumer group `pequod`)
-**Key:** `repo_id` (= `gh_<github_repository_id>`)
+**Producer:** moby-dick (após `container.get_archive()` extrair `/tmp/scan.sarif.json` do container do scanner) · **Consumer:** pequod · **Key:** `repo_id` (`gh_<github_repository_id>`)
 
-**Value schema:** [`Finding v1`](finding-v1.md).
+**Value:** SARIF v2.1.0, já pronto dentro da image do scanner (nenhum dos 4 scanners depende de moby-dick pra gerar o SARIF — ver [Decisão §11](../overview/decisions.md#11-extração-de-findings-dentro-da-scanner-image-status-concluído-não-é-mais-target)).
 
 ```json
 {
@@ -73,63 +68,49 @@ Stack atual: **Redpanda** (Kafka-compatible), single-node, sem replicação. Rod
 }
 ```
 
-**Propósito:** evento de findings recém-extraídos, em formato scanner-agnóstico (SARIF). Pequod normaliza em `Finding v1`, dedupa por fingerprint e persiste.
+Pequod normaliza em [`Finding v1`](finding-v1.md), dedupa por `(fingerprint, repo_id)`.
 
-**Particionamento:** key = `repo_id` (imutável a rename/transfer no GitHub).
+### `quality-gate.scanner.completed.v1`
 
-**Retenção:** default (7 dias). Reprocessar implica re-upsert no pequod (idempotente via fingerprint).
+**Producer:** moby-dick · **Consumer:** pequod · **Key:** `repo_full_name`
 
-## Tópicos futuros previstos
+**Propósito:** fallback assíncrono — o caminho **principal** de avaliação do quality gate hoje é a chamada HTTP síncrona `POST /internal/quality-gates/{workflow_id}/evaluate` (moby-dick → pequod), não este tópico. Ver [Decisão §16](../overview/decisions.md#16-quality-gate-síncrono-via-rest-entre-moby-dick-e-pequod--nova).
 
-Nenhum criado ainda. Listados aqui pra alinhar nomenclatura quando virarem reais.
+### `quality-gate.evaluated.v1`
 
-### `findings.created`, `findings.updated`, `findings.resolved`
+**Producer:** pequod · **Consumer:** interessados (rede de segurança) · **Propósito:** publicado quando o gate finaliza sem nenhuma chamada HTTP síncrona em andamento (mensagens fora de ordem ou timeout) — não é o caminho principal de decisão.
 
-**Producer:** pequod (após dedup/upsert)
-**Consumer:** N (notifier, ai-triage, risk-engine, etc)
+### Dead-letter queues
 
-**Value:** schema `Finding v1` + diff de estado.
+`jobs.orchestration.dlq` e `quality-gate.moby-dick.dlq` — mensagens que falharam processamento após as tentativas configuradas.
 
-**Propósito:** event bus de findings normalizados. Cada serviço novo é um consumer independente, sem acoplamento ao pequod.
+## O que NÃO é mais um tópico Kafka (pivô pra REST)
 
-### `ai.enrichments.triage`, `ai.enrichments.reachability`
+A versão anterior desta página previa `findings.created`, `ai.enrichments.triage`, `ai.enrichments.reachability` e `scans.completed` como tópicos futuros. Eles não foram criados como tópicos — o enriquecimento por IA foi resolvido de outra forma:
 
-**Producer:** serviços de IA
-**Consumer:** findings-store, dashboard
-
-**Value:** schemas específicos de enrichment.
-
-**Propósito:** anexar classificações IA aos findings sem mexer no store.
-
-### `scans.completed`
-
-**Producer:** moby-dick
-**Consumer:** métricas, dashboard
-
-**Value:** metadata do job (duração, exit code, image, scan_id).
-
-**Propósito:** telemetria — quantos scans/dia, latência por scanner, taxa de falha.
+- **Triagem/clustering por IA:** `tars-ai` faz *polling* REST contra o pequod (`/integrations/tars/pending-findings`, `/pending-clusters`, `/semantic-candidates`) e submete vereditos via REST (`/finding-analyses`, `/cluster-analyses`, `/semantic-clustering-decisions`) — sem tópico Kafka dedicado. Ver [Decisão §17](../overview/decisions.md#17-tars-ai-consome-o-pequod-via-rest-polling-não-via-tópico-kafka-dedicado--nova).
+- **Notificação de findings críticos:** ainda não existe canal de entrega externo (Slack/email); o modelo `alerts` já existe no pequod, falta o `notifier`.
+- **Métricas de scan (`scans.completed`):** não existe como tópico; moby-dick expõe `GET /metrics/quality-gate` (não formato Prometheus).
 
 ## Convenções de naming
 
 | Padrão | Uso |
 |---|---|
-| `<domain>.<event>.<state>` | findings.scan.completed, jobs.orchestration |
-| Plural pro domain | `findings.*`, `jobs.*`, `events.*` |
-| sem prefixo de versão no nome | versão fica no schema_version do payload |
+| `<domain>.<event>.<state>.v<versão>` | `quality-gate.workflow.started.v1`, `repository.registered.v1` |
+| Plural pro domain quando o domínio é uma coleção | `findings.*`, `jobs.*` |
+| Versão no nome do tópico (não só no schema) | `.v1` sufixo — diferente da convenção antiga descrita aqui (que previa versão só no `schema_version` do payload) |
 
 ## Particionamento
 
 | Topic | Partition key | Razão |
 |---|---|---|
 | `github.events.raw` | `repo_full_name` | balancear por repo |
-| `jobs.orchestration` | `repo_full_name` | ordem por repo (Sonar Community sobrescreve) |
+| `jobs.orchestration` | `repo_full_name` | ordem por repo |
 | `findings.raw` | `repo_id` (`gh_<id>`) | ordem por repo, key estável a rename |
-| `findings.created` (futuro) | `finding_fingerprint` | dedup por hash |
+| `repository.registered.v1` / `.unregistered.v1` | `repo_full_name` | ordem por repo |
+| `quality-gate.*` | `repo_full_name` | ordem por repo/workflow |
 
 ## Replay / reprocessamento
-
-Pra reprocessar mensagens antigas:
 
 ```bash
 # Reset consumer group ao início
@@ -143,18 +124,13 @@ docker exec aspm-redpanda rpk group seek moby-dick --to end
 ```
 
 !!! warning "Cuidado com side effects"
-    Reprocessar `jobs.orchestration` vai disparar scans de novo. Em produção, requer flag de "replay mode" no moby-dick que pule chamadas ao GitHub.
+    Reprocessar `jobs.orchestration` vai disparar scans de novo e recriar/atualizar check_runs no GitHub.
 
 ## Monitoring
 
-Lag por consumer group:
 ```bash
 docker exec aspm-redpanda rpk group describe moby-dick
 docker exec aspm-redpanda rpk group describe pequod
-```
-
-Métricas do broker:
-```bash
 docker exec aspm-redpanda rpk cluster info
 docker exec aspm-redpanda rpk cluster health
 ```
