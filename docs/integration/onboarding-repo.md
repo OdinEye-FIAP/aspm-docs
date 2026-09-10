@@ -1,9 +1,6 @@
 # Onboarding de um repositório
 
-Como adicionar um repo da org pra que ele receba scan automático em todo PR.
-
-!!! note "Security Baseline (push na default branch) — ainda não disponível"
-    Uma versão anterior desta página descrevia também um "Security Baseline" disparado por `push` direto na default branch (full-branch scan). O pequod já tem suporte completo a esse fluxo (`scope=branch`), mas captain-hook e moby-dick ainda não o implementam em `main` — um push hoje não dispara nenhum scan. Este onboarding cobre apenas o que funciona hoje: scan em PR. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova).
+Como adicionar um repo da org pra que ele receba scan automático em todo PR **e** um Security Baseline a cada push na default branch.
 
 ## Pré-requisitos
 
@@ -17,7 +14,7 @@ Como adicionar um repo da org pra que ele receba scan automático em todo PR.
    - **All repositories** (mais aberto) OU
    - **Only select repositories** → adicione seu repo
 
-A partir desse momento, qualquer PR (`opened`/`synchronize`/`reopened`) dispara um webhook pro captain-hook que inicia o Quality Gate. Um `push` direto também chega como webhook, mas hoje não tem handler dedicado — é só logado e descartado (ver nota no topo).
+A partir desse momento, qualquer PR (`opened`/`synchronize`/`reopened`) ou push na default branch dispara um webhook pro captain-hook.
 
 !!! note "Instalação em massa vs. `ping` individual"
     Se você instalar a App **selecionando vários repositórios de uma vez** (ou em toda a organização), o GitHub dispara `installation`/`installation_repositories` — o captain-hook registra todos eles no pequod, mas **não** abre o PR de auto-scaffold automaticamente (evita dezenas de PRs simultâneos). Pra disparar o scaffold desses repositórios manualmente, chame `POST /repos/{owner}/{repo}/scaffold-pr` no captain-hook.
@@ -73,7 +70,7 @@ DAST_MODE=fixed_url          # ou compose_preview
 ZAP_TARGET_URL=https://staging.meu-servico.exemplo   # obrigatório se DAST_MODE=fixed_url
 ```
 
-Isso é configuração **global do captain-hook**, não por repositório — vale para todos os repos onboardados na mesma instância. Ver [Adicionar novo scanner](../developer/adding-a-scanner.md) para o detalhe de cada flag.
+Isso é configuração **global do captain-hook**, não por repositório — vale para todos os repos onboardados na mesma instância (PR e Security Baseline usam a mesma matriz de flags). Ver [Adicionar novo scanner](../developer/adding-a-scanner.md) para o detalhe de cada flag.
 
 !!! warning "`DAST_MODE=compose_preview` exige `docker-compose.aspm.yml` real"
     Se optar por `compose_preview`, o arquivo scaffoldado pelo auto-scaffold (Passo 1) é um **skeleton não funcional** — precisa de ajustes (porta, build, healthcheck) antes do ZAP conseguir subir e escanear a preview do seu repo.
@@ -156,9 +153,34 @@ Aba **Checks** do PR deve mostrar o check individual de cada scanner habilitado 
 
 Click em qualquer check → abre details com Title, Summary e Text (anotações inline + logs tail). Ver [Entendendo o check_run no PR](check-run.md) para o detalhe completo dos dois níveis de check.
 
-## Passo 7 — Security Baseline (push na default branch) — ainda não disponível
+## Passo 7 — Validar o Security Baseline no push (default branch)
 
-Diferente do que uma versão anterior desta página descrevia, **push direto na default branch não dispara nenhum scan hoje.** Não há passo de validação pra rodar aqui — o design existe (full-branch scan, check_run no commit, Issue agregada), mas depende de trabalho pendente em captain-hook (produzir o evento a partir do push) e moby-dick (consumir e reagir). O pequod já está pronto do lado dele. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova) e o `TODO.md` da raiz do monorepo local para o plano de recuperação, se você for trabalhar nisso.
+Diferente do que se poderia supor, **push direto na default branch dispara scan** — não é o mesmo fluxo de PR, é o **Security Baseline** (scope=`branch`): full-branch scan, sem `SONAR_PULLREQUEST_*`.
+
+```bash
+git checkout main
+git pull
+echo "baseline test" >> README.md
+git commit -am "test: baseline"
+git push origin main
+```
+
+Na VPS:
+
+```bash
+sudo journalctl -u captain-hook -f | grep -i baseline
+```
+
+Deve aparecer:
+```
+INFO - Security Baseline iniciado workflow_id=<uuid> repo=<owner>/<repo> branch=main scanners=sonar,...
+INFO - Baseline job publicado: job_id=<uuid> kind=sonar_scan repo=<owner>/<repo> workflow_id=<uuid> branch=main
+```
+
+O resultado aparece:
+
+- Como um check_run `Security Baseline ...` **no commit** (aba Checks do commit, não de um PR)
+- Como uma **Issue** agregada no repositório (label `aspm-baseline:main`), atualizada a cada novo push — visibilidade melhor que um check em commit avulso, e é o que o `heimdall-dashboard` usa hoje
 
 ## Passo 8 — Configurar branch protection (opcional, recomendado)
 
@@ -175,6 +197,7 @@ Resultado: PRs com Quality Gate reprovado (`failed`/`error`) não podem ser merg
 ## Custos / impacto
 
 - **Cada PR push**: ~30s-3min adicional por scanner habilitado, até o resultado final do Quality Gate (depende do tamanho do código e de quantos scanners estão ativos)
+- **Cada push na default branch**: gera o mesmo custo, como Security Baseline
 - **Recursos VPS**: ~512MB de RAM por container de scanner rodando; `compose_preview` do ZAP soma o custo de subir a aplicação inteira
 - **Storage**: Sonar re-escreve análise no `sonar-db` a cada scan — não cresce ilimitado (Community Build mantém só última análise da main)
 
@@ -182,7 +205,7 @@ Resultado: PRs com Quality Gate reprovado (`failed`/`error`) não podem ser merg
 
 ### Cada scan do Sonar sobrescreve
 
-SonarQube Community Build mostra **só o último scan rodado** no projeto. Se você tem 3 PRs abertos e push em todos, cada novo scan substitui as métricas anteriores na Sonar UI.
+SonarQube Community Build mostra **só o último scan rodado** no projeto. Se você tem 3 PRs abertos e push em todos (ou um PR e um push direto na main), cada novo scan substitui as métricas anteriores na Sonar UI.
 
 Isso é limitação do Community Build. A decisão registrada em [Decisões](../overview/decisions.md#7-modo-de-scan-análise-principal-sem-pr-mode) é usar **o check_run (e, para findings, o pequod) como feedback confiável**, não a Sonar UI isolada.
 
@@ -193,15 +216,15 @@ Se seu repo usa `master` ou outra branch como principal, e o projeto no Sonar fo
 **Fix:**
 - **Sonar UI:** Project → Administration → Branches and Pull Requests → editar main branch name
 
-### Push direto na default branch não dispara nada hoje (corrigido 2026-09-10)
+### Push direto na default branch dispara o Security Baseline
 
-Diferente do que uma versão anterior desta documentação afirmava, `push` na default branch **é ignorado** — o webhook chega no captain-hook, mas cai no branch "evento sem processamento dedicado" e é só logado. Não há Security Baseline, check_run no commit ou Issue agregada em produção hoje. Ver Passo 7 e [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova).
+`push` na default branch **não é ignorado**. Ele dispara o Security Baseline (scope=`branch`) — mesma matriz de scanners habilitados, full-branch scan, check_run no commit + Issue agregada no repo. Ver Passo 7. Push em outras branches (feature, etc.) continua sem disparar nada — `to_baseline_context` filtra estritamente pela default branch.
 
 ### Repos privados funcionam
 
 GitHub App com `Contents: Read` clona repos privados via `https://x-access-token:${TOKEN}@github.com/...`. Não precisa tornar o repo público.
 
-## Padrão de troubleshooting (no PR)
+## Padrão de troubleshooting (no PR ou no commit)
 
 Se o check ficar vermelho mas você não entender por quê:
 
@@ -226,4 +249,4 @@ Pra **parar** de scanear um repo:
 1. **Organization → Settings → GitHub Apps → aspm-ai-pipeline → Configure**
 2. Em **Repository access**, remover o repo da lista
 
-Webhooks (PR) param imediatamente. Scans existentes no Sonar UI ficam até serem deletados manualmente.
+Webhooks (PR e push) param imediatamente. Scans existentes no Sonar UI ficam até serem deletados manualmente.

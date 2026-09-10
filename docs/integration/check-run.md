@@ -1,21 +1,18 @@
 # Entendendo o check_run no PR
 
-Como ler o feedback do ASPM-AI no seu PR.
-
-!!! warning "Security Baseline (push na default branch) — não está em `main` (corrigido 2026-09-10)"
-    Esta página já continha referências a checks/Issues de "Security Baseline" disparados por `push` na default branch. Esse fluxo **não existe em `main`** hoje: captain-hook não tem handler pra `push` (3 PRs fechados sem merge) e moby-dick não faz upsert de Issue (1 PR mergeado e depois revertido). Tudo abaixo descreve **só o fluxo de PR** de fato em produção; trechos que mencionam push/Baseline/Issue estão marcados como design ainda não implementado. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova).
+Como ler o feedback do ASPM-AI no seu PR (ou num push na default branch, para o Security Baseline).
 
 !!! note "Dois níveis de check hoje"
-    Desde a introdução do Quality Gate multi-scanner, o PR mostra **dois tipos de check**:
+    Desde a introdução do Quality Gate multi-scanner, o PR (ou commit, no caso do Security Baseline) mostra **dois tipos de check**:
 
-    1. **Checks individuais**, um por scanner habilitado (`SonarQube Scan`, `Semgrep SAST`, `Trivy SCA`, `OWASP ZAP DAST`). Criados/atualizados pelo `moby-dick` (`controller/job_controller.py`) a cada scanner executado. (Variantes `*-Baseline` para push na default branch fazem parte do design do Security Baseline, mas não existem em `main` — ver aviso no topo.)
-    2. **Check consolidado** `OdinEye / Quality Gate` (nome configurável via `QUALITY_GATE_CHECK_NAME` no moby-dick), que agrega o resultado de todos os scanners esperados e é a fonte de decisão para bloqueio de merge (`controller/quality_gate_check_controller.py`).
+    1. **Checks individuais**, um por scanner habilitado (`SonarQube Scan`, `Semgrep SAST`, `Trivy SCA`, `OWASP ZAP DAST` — ou as variantes `*-Baseline` num push na default branch). Criados/atualizados pelo `moby-dick` (`controller/job_controller.py`) a cada scanner executado.
+    2. **Check consolidado** `OdinEye / Quality Gate` (ou `Security Baseline ...` quando `scope=branch`; nome configurável via `QUALITY_GATE_CHECK_NAME` no moby-dick), que agrega o resultado de todos os scanners esperados e é a fonte de decisão para bloqueio de merge (`controller/quality_gate_check_controller.py`).
 
     Se você só configurou branch protection com um scanner específico, use o check individual dele. Para bloquear merge com base no Quality Gate completo (todos os scanners), use `OdinEye / Quality Gate`.
 
 ## Onde aparece
 
-Aba **Checks** do PR no GitHub. Você verá algo como:
+Aba **Checks** do PR no GitHub (ou do commit, para Security Baseline). Você verá algo como:
 
 ```
 OdinEye / Quality Gate     ← consolidado
@@ -36,7 +33,7 @@ Estados possíveis em cada um:
 
 ## Check consolidado — `OdinEye / Quality Gate`
 
-Criado quando `captain-hook` publica `quality-gate.workflow.started.v1` (1 por PR aberto/atualizado). Fica `in_progress` listando os scanners esperados (mesma lista que gerou os `JobDescriptor`s) até que o `moby-dick`, depois de cada scanner terminar, consiga uma resposta "pronto" do pequod.
+Criado quando `captain-hook` publica `quality-gate.workflow.started.v1` (1 por PR aberto/atualizado, ou por push na default branch). Fica `in_progress` listando os scanners esperados (mesma lista que gerou os `JobDescriptor`s) até que o `moby-dick`, depois de cada scanner terminar, consiga uma resposta "pronto" do pequod.
 
 `decision` do pequod mapeia para `conclusion` do GitHub assim:
 
@@ -49,8 +46,8 @@ Criado quando `captain-hook` publica `quality-gate.workflow.started.v1` (1 por P
 
 O `output.text` do check consolidado traz: decisão, política aplicada (`policy_name`/`policy_version`), contagem de findings avaliados/bloqueantes/avisos/ignorados, e quantos scanners esperados completaram/falharam/foram cancelados/deram timeout.
 
-!!! tip "Security Baseline (push na default branch) — design, não implementado"
-    O pequod já suporta um gate disparado por `push` (scope=`branch`, sem PR), com check consolidado no commit e uma Issue agregada no repositório (label `aspm-baseline:<branch>`) fazendo o papel de notificação, já que um check em commit avulso tem visibilidade baixa. **Esse fluxo não roda em `main` hoje** — nem captain-hook publica o evento a partir de um push, nem moby-dick faz o upsert da Issue. Ver aviso no topo desta página.
+!!! tip "Security Baseline (push na default branch)"
+    Quando o gate é disparado por `push` (scope=`branch`, não por PR), o check consolidado é criado **no commit** (não há PR) com título `Security Baseline ...`. Além do check, o `moby-dick` faz upsert de uma **Issue** agregada no repositório (label `aspm-baseline:<branch>`), porque um check em commit avulso tem visibilidade baixa — a Issue aparece nas notificações padrão do GitHub. A Issue é atualizada a cada novo push na mesma branch e só é reaberta automaticamente se um baseline seguinte reprovar (`failed`/`error`) depois de o dev tê-la fechado manualmente. Confirmado em `main` desde 31/ago/2026 — ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10).
 
 ## Check individual — por scanner
 
@@ -135,13 +132,14 @@ Sem SARIF (scanner morreu antes de escrever o arquivo): só os logs tail, em cod
 Vide [decisão #7](../overview/decisions.md#7-modo-de-scan-análise-principal-sem-pr-mode).
 
 - ❌ **Sem inline comments nativos do Sonar** no PR (feature paga) — mitigado pelas anotações do check_run, que vêm do SARIF construído a partir da API do Sonar
-- ❌ **Sem decoration visual no Sonar UI por PR** (last scan wins)
-- ❌ **Sem comparação delta no Sonar:** avalia o código todo, não só o diff do PR (Semgrep/Trivy/ZAP não têm essa limitação — rodam full-scan por natureza)
+- ❌ **Sem decoration visual no Sonar UI por PR** (last scan wins — vale também entre PRs diferentes e pushes de Security Baseline, todos no mesmo `projectKey`)
+- ❌ **Sem comparação delta no Sonar:** avalia o código todo, não só o diff do PR (Semgrep/Trivy/ZAP não têm essa limitação — rodam full-scan por natureza, igual ao Security Baseline)
 
 O que **funciona**:
 - ✅ check individual por scanner + check consolidado do Quality Gate (verde/amarelo/vermelho)
 - ✅ Branch protection (bloqueio de merge se exigir o check consolidado verde)
 - ✅ Anotações inline por finding, com correção sugerida quando o scanner oferece
+- ✅ Security Baseline (push na default branch) com Issue agregada — ver tip acima
 
 ## Como o check_run é produzido (interno)
 
@@ -192,30 +190,28 @@ sequenceDiagram
 ## Ciclo de vida completo (state diagrams)
 
 !!! note "Migrado do FLOWCHART.md da raiz do monorepo (10/set/2026)"
-    Os diagramas abaixo substituem o diagrama de estado antigo do `FLOWCHART.md` local (que cobria só um scanner único, sem check consolidado e sem menção ao Security Baseline). Cobrem os dois níveis de check reais em produção hoje (fluxo de PR); os pontos de design do Security Baseline (não implementado) estão marcados explicitamente.
+    Os diagramas abaixo substituem o diagrama de estado antigo do `FLOWCHART.md` local (que cobria só um scanner único, sem check consolidado e sem Security Baseline). Atualizados para os dois níveis de check e para o fluxo de push na default branch.
 
 ### Check individual (por scanner)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Inexistente: PR aberto/atualizado
+    [*] --> Inexistente: PR aberto/atualizado<br/>ou push na default branch
 
     Inexistente --> InProgress: moby-dick cria o check<br/>(external_id=job_id)
     note right of InProgress
         Um check por scanner habilitado
         (SonarQube Scan, Semgrep SAST,
-        Trivy SCA, OWASP ZAP DAST).
-        Variantes *-Baseline (push na
-        default branch) sao design,
-        nao existem em main hoje.
+        Trivy SCA, OWASP ZAP DAST —
+        ou variantes *-Baseline)
     end note
 
     InProgress --> Success: scanner exit 0
     InProgress --> Failure: scanner exit != 0<br/>(findings bloqueantes)
     InProgress --> Failure: erro operacional<br/>(docker/clone/timeout)
 
-    Success --> InProgress: novo push no PR (synchronize)
-    Failure --> InProgress: novo push no PR (synchronize)
+    Success --> InProgress: novo push no PR (synchronize)<br/>ou novo push na default branch
+    Failure --> InProgress: novo push no PR (synchronize)<br/>ou novo push na default branch
 
     Success --> [*]
     Failure --> [*]: não bloqueia merge por si só —<br/>quem decide é o check consolidado
@@ -241,10 +237,10 @@ stateDiagram-v2
     InProgress --> Failed: decision=failed
     InProgress --> ErroOperacional: decision=error
 
-    Passed --> InProgress: novo push no PR
-    Warning --> InProgress: novo push no PR
-    Failed --> InProgress: novo push no PR
-    ErroOperacional --> InProgress: novo push no PR
+    Passed --> InProgress: novo push (PR ou default branch)
+    Warning --> InProgress: novo push
+    Failed --> InProgress: novo push
+    ErroOperacional --> InProgress: novo push
 
     Passed --> [*]
     Warning --> [*]
@@ -252,11 +248,11 @@ stateDiagram-v2
     ErroOperacional --> [*]: merge bloqueado se branch protection<br/>exigir este check
 
     note left of Failed
-        Design ainda nao implementado em main:
-        quando scope=branch (Security Baseline),
-        tambem faria upsert de uma Issue agregada
-        (label aspm-baseline:<branch>). Hoje
-        push nao dispara nenhum destes estados.
+        Quando scope=branch (Security Baseline):
+        tambem upsert de uma Issue agregada
+        (label aspm-baseline:<branch>), reaberta
+        automaticamente se um baseline seguinte
+        reprovar depois de o dev te-la fechado
     end note
 ```
 
