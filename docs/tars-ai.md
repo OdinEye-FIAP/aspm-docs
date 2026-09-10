@@ -1,12 +1,20 @@
 # TARS AI
 
-Serviço de inteligência que enriquece findings persistidos pelo Pequod com análises estruturadas (summary, impact, recommendation, priority, confidence).
+Serviço de triagem por IA e clustering semântico do ecossistema ASPM-AI. Enriquece findings/clusters técnicos do pequod com análises estruturadas e propõe a consolidação semântica de risco (dedupe entre scanners).
+
+!!! note "Dois modos de operação"
+    O TARS AI opera em dois modos, controlados por `TARS_PEQUOD_INTEGRATION_ENABLED`:
+
+    - **Legado** (padrão, `false`) — acesso direto ao PostgreSQL do pequod (`database.db`), rotas `/ai/*`.
+    - **REST contra o pequod** (`true`) — nenhum acesso direto ao banco; consome as filas de trabalho e submete vereditos via `/integrations/tars/*` do pequod, rotas `/integrations/pequod/*`.
+
+    Ambos os modos coexistem no mesmo binário (`main.py` inclui os dois routers); o `TarsAutoAnalyzer` escolhe o ciclo automático de acordo com a flag.
 
 ## Visão rápida
 
-- Lê `finding` do banco do Pequod
-- Envia para provider de IA configurável (mock, groq, huggingface, gemini)
-- Persiste resultado em `finding_ai_analysis`
+- Lê findings/clusters pendentes de análise (do banco do pequod direto, ou via REST `/integrations/tars/pending-findings` / `/pending-clusters` / `/semantic-candidates`).
+- Envia para o provider de IA configurável (`mock`, `groq`, `huggingface`, `gemini`).
+- Persiste o veredito em `finding_ai_analysis` (individual, "slim") ou `finding_cluster_ai_analysis` (cluster, completo), ou propõe consolidação semântica (`merge`/`keep`/`split`) que o pequod grava como `consolidated_risk`.
 
 ## Quick start
 
@@ -20,14 +28,76 @@ cp .env.example .env
 python -m uvicorn main:app --host 0.0.0.0 --port 6060 --reload
 ```
 
-## Endpoints úteis
+## Provider de IA ativo
 
-- `GET /health` — status do serviço
-- `GET /ai/pending` — findings pendentes
-- `POST /ai/analyze-pending` — dispara análise
-- `GET /ai/analyses` — lista análises geradas
+Configurado por `AI_PROVIDER` (`config/settings.py`). Provider padrão do código é `mock`, mas o provider em uso operacionalmente é o **Gemini** (`gemini-2.5-flash`, `service/ai_provider/gemini_provider.py`). `groq` (`llama-3.1-8b-instant`) e `huggingface` (`fdtn-ai/Foundation-Sec-8B-Reasoning`) continuam disponíveis via `service/ai_provider/factory.py`.
+
+## Endpoints — modo legado (`/ai/*`, `/health`)
+
+| Método | Path | Função |
+|---|---|---|
+| `GET` | `/health` | status do serviço + provider ativo |
+| `GET` | `/ai/pending` | findings pendentes (qualquer repo/ref) |
+| `GET` | `/ai/pending-refs` | grupos `repo`/`ref` com findings pendentes |
+| `POST` | `/ai/analyze-pending` | analisa findings pendentes (qualquer repo/ref) |
+| `POST` | `/ai/analyze-ref` | analisa findings pendentes de um `repo`+`ref` específico (fluxo de PR) |
+| `POST` | `/ai/analyze/{finding_id}` | analisa um finding específico |
+| `GET` | `/ai/analyses` | lista análises de findings individuais (com o finding embutido) |
+| `GET` | `/ai/stats` | totais: findings ingeridos vs. já enriquecidos pela IA |
+| `POST` | `/ai/clusterize-pending` | clustering determinístico legado (grava em `finding_cluster`) |
+| `GET` | `/ai/clusters` | lista clusters |
+| `GET` | `/ai/clusters/{cluster_id}` | detalhe de um cluster |
+| `POST` | `/ai/analyze-clusters` | analisa clusters pendentes (grava em `finding_cluster_ai_analysis`) |
+| `GET` | `/ai/cluster-analyses` | lista análises de clusters (com o cluster embutido) |
+
+## Endpoints — modo REST/pequod (`/integrations/pequod/*`)
+
+| Método | Path | Função |
+|---|---|---|
+| `GET` | `/integrations/pequod/health` | healthcheck do pequod + capacidades (`/integrations/tars/capabilities`) |
+| `POST` | `/integrations/pequod/analyze-findings` | busca `pending-findings` no pequod, analisa e submete via `finding-analyses` |
+| `POST` | `/integrations/pequod/analyze-clusters` | busca `pending-clusters` no pequod, analisa e submete via `cluster-analyses` |
+| `POST` | `/integrations/pequod/run` | ciclo completo: findings pendentes + clustering semântico (`semantic-candidates` → proposta `merge`/`keep`/`split` → `semantic-clustering-decisions`) — 409 se `TARS_PEQUOD_INTEGRATION_ENABLED=false` |
+
+## Contrato de análise
+
+Individual finding (`finding_ai_analysis`, "slim"):
+
+```json
+{
+  "recommendation": "...",
+  "priority": "high",
+  "confidence": 0.82,
+  "model_name": "gemini-2.5-flash"
+}
+```
+
+Cluster / candidate cluster (`finding_cluster_ai_analysis`, completo):
+
+```json
+{
+  "summary": "...",
+  "impact": "...",
+  "recommendation": "...",
+  "priority": "high",
+  "false_positive_likelihood": "low",
+  "confidence": 0.82,
+  "reasoning_short": "...",
+  "model_name": "gemini-2.5-flash"
+}
+```
+
+No modo REST, a consolidação semântica (`semantic_cluster_pending_candidates`) normaliza a proposta da IA em uma lista de "riscos" (`merge`/`keep`/`split`) antes de enviar ao pequod — candidates ambíguos ou não cobertos caem em `keep` seguro (fallback), preservando a evidência sem merge automático indevido.
+
+## Auto worker
+
+`service/auto_worker.py` (`TarsAutoAnalyzer`) roda em background quando `TARS_AUTO_ANALYZE_ENABLED=true`:
+
+- **Modo REST** (`TARS_PEQUOD_INTEGRATION_ENABLED=true`): chama `PequodIntegrationService.run_cycle()` a cada `TARS_AUTO_ANALYZE_INTERVAL_SECONDS`.
+- **Modo legado**: clusteriza pendências e analisa clusters pendentes (`ClusterService` + `analyze_pending_clusters`).
 
 ## Links
 
-- README completo: ../tars-ai/README.md
-- TARS docs central: ../index.md
+- README completo: [`tars-ai/README.md`](https://github.com/OdinEye-FIAP/tars-ai/blob/main/README.md)
+- [Schema do banco](reference/database-schema.md)
+- TARS docs central: [Índice](index.md)
