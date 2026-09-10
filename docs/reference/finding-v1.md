@@ -171,4 +171,4 @@ CREATE TABLE finding (
 );
 ```
 
-Schema completo (todas as 22 tabelas) em `pequod/deploy/schema.sql` — não há mais `deploy/migrations/001_init.sql`; o schema consolidado substitui as migrations incrementais 001–016.
+Schema completo (todas as 23 tabelas) em `pequod/deploy/schema.sql` — não há mais `deploy/migrations/001_init.sql`; o schema consolidado substitui as migrations incrementais 001–016.
