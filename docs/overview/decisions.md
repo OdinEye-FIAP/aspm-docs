@@ -50,7 +50,7 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 - **Risk Exceptions** — decisão de governança (`false_positive`/`accepted_risk`/`suppressed`) sobre um finding ou cluster.
 - **Security Gate** — políticas versionadas (por aplicação ou globais), avaliadas contra findings/clusters de um scan.
-- **Quality Gate** — orquestrado pelo pequod via endpoint síncrono chamado pelo moby-dick a cada scanner concluído (`POST /internal/quality-gates/{workflow_id}/evaluate`). O schema do pequod já suporta `scope=pr` (padrão) **e** `scope=branch` (Security Baseline), mas hoje só `scope=pr` é de fato exercitado em produção — ver §15 para o porquê.
+- **Quality Gate** — orquestrado pelo pequod via endpoint síncrono chamado pelo moby-dick a cada scanner concluído (`POST /internal/quality-gates/{workflow_id}/evaluate`). Suporta `scope=pr` e `scope=branch` (Security Baseline) — os dois em produção de ponta a ponta, ver §15.
 - **Candidate Clustering** — agrupamento determinístico de findings correlacionados, antes de qualquer decisão semântica.
 - **Consolidated Risk** — a unidade de risco "canônica" exibida no heimdall-dashboard, resultado de decisão de IA do TARS (`merge`/`keep`/`split`) ou auto-attach determinístico.
 - API REST com **38 rotas reais** (contadas 2026-09-10: 5 top-level incluindo `/findings*` legado, 22 em `/api/v1/*`, 3 em quality-gates, 7 em `/integrations/tars/*`, 1 em `/internal/quality-gates/*`). Uma versão anterior desta página citava "~25 rotas" — contagem manual imprecisa, corrigida.
@@ -64,7 +64,7 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 **Decisão:** scanner roda numa imagem custom que clona o repo dentro do próprio container.
 
-**Status atual:** o mesmo padrão foi replicado para `semgrep-runner`, `trivy-runner` e `zap-runner` sem alterar moby-dick — confirma a tese original de que adicionar scanner é só "build de image nova".
+**Status atual:** o mesmo padrão foi replicado para `semgrep-runner`, `trivy-runner` e `zap-runner` sem alterar moby-dick — confirma a tese original de que adicionar scanner é só "build de image nova". Isso vale tanto para o fluxo de PR (`build_job`) quanto para o Security Baseline (`build_baseline_job`, ver §15) — cada scanner builder tem as duas funções lado a lado.
 
 **Trade-off:** re-clone a cada scan (sem cache). Aceitável enquanto repos são pequenos.
 
@@ -80,10 +80,7 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 **Decisão:** scanner roda **sem** flags `sonar.pullrequest.*` por padrão. Cada scan sobrescreve a análise principal do projeto Sonar.
 
-**Confirmado no código (`moby-dick/deploy/sonar-runner/entrypoint.sh`):** SonarQube Community Build **não suporta** `sonar.pullrequest.*`/`sonar.branch.*` (features pagas, Developer Edition+). O entrypoint só adiciona essas flags se `SONAR_PR_MODE=enabled` for setado explicitamente (kill switch operacional, não é o default).
-
-!!! warning "Isto contradizia uma afirmação antiga no `DECISIONS.md` do captain-hook"
-    O `DECISIONS.md` que existia na raiz do monorepo local (removido em 10/set/2026 por redundância com esta página) tinha uma seção que descrevia PR decoration (`sonar.pullrequest.key/branch/base`) como comportamento vigente. O código real (este entrypoint) mostrava que isso estava desligado por padrão — a inconsistência foi corrigida na raiz antes da remoção do arquivo.
+**Confirmado no código (`moby-dick/deploy/sonar-runner/entrypoint.sh`):** SonarQube Community Build **não suporta** `sonar.pullrequest.*`/`sonar.branch.*` (features pagas, Developer Edition+). O entrypoint só adiciona essas flags se `SONAR_PR_MODE=enabled` for setado explicitamente (kill switch operacional, não é o default). Isso vale tanto para PRs quanto para o Security Baseline — o baseline nem tenta setar essas flags (`build_baseline_job` não popula `SONAR_PULLREQUEST_*`), então cada push na default branch também sobrescreve o snapshot anterior do mesmo `projectKey` (aceito, pequod é source-of-truth — ver §14).
 
 **Trade-off aceito:**
 - ❌ Sem isolamento entre PRs no Sonar UI (último scan ganha)
@@ -142,26 +139,26 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
-## 15. Quality Gate com `scope=pr` e `scope=branch` (Security Baseline) — status real: SÓ NO PEQUOD (corrigido 2026-09-10)
+## 15. Quality Gate com `scope=pr` e `scope=branch` (Security Baseline) — ponta a ponta em `main` (reconfirmado 2026-09-10)
 
-!!! danger "Correção importante — versão anterior desta seção estava errada"
-    Uma versão anterior desta página (e o `aspm-docs` inteiro por herança) descrevia esta feature como implementada de ponta a ponta. **Não está.** A confusão veio de um commentário de PR e de uma entrada do `TODO.md` do monorepo que citaram hashes de commit incorretamente (o hash citado era o commit-BASE de uma branch de feature, não um merge real). Investigação direta no GitHub (status de PRs) e no código (`git merge-base --is-ancestor`) em 2026-09-10 corrigiu o quadro:
+**Decisão:** todo `quality_gate_runs` no pequod tem um `scope`: `pr` (padrão, exige `pull_request_number`) ou `branch` (Security Baseline — avaliação contínua da default branch a cada `push`, exige `branch_name`). Os dois campos mutuamente exclusivos por constraint no banco.
 
-**Decisão original:** todo `quality_gate_runs` no pequod teria um `scope`: `pr` (padrão, exige `pull_request_number`) ou `branch` (Security Baseline — avaliação contínua da default branch, exige `branch_name`). Os dois campos mutuamente exclusivos por constraint no banco.
+**Rollout coordenado (31/ago/2026), confirmado nos três repositórios:**
 
-**Estado real por repositório:**
-
-| Repo | Estado | Evidência |
+| Repo | Commit em `main` | O que entrega |
 |---|---|---|
-| **pequod** | ✅ Completo em `main` | commit `fb65ca1` (PR #50) — `deploy/schema.sql`: coluna `scope` + CHECK de exclusividade + índice único parcial `ux_quality_gate_runs_branch`; `wire/schemas/quality_gate_v1.py` valida consistência; `controller/quality_gate_controller.py` processa `scope` em todo o fluxo (workflow.started → evaluate → evaluated); endpoint `/internal/quality-gates/{workflow_id}/evaluate` funcional para os dois scopes. |
-| **captain-hook** | ❌ Não está em `main` | Três PRs (`#38`, `#41`, `#42`) fechados sem merge. `controller/webhook_controller.py` trata `push` como "evento sem processamento dedicado" — apenas loga. `push_controller.py`/`push_adapter.py`/`baseline_context.py` só existem na branch `feat/quality-gate-scope-branch`, não mergeada. |
-| **moby-dick** | ❌ Não está em `main` | PR `#38` aparece como `merged: true` na API do GitHub (31/ago), mas o commit não é ancestral da `main` atual (`git merge-base --is-ancestor` negativo) — removido/revertido depois do merge. `wire/schemas/quality_gate_v1.py` hoje não tem campo `scope` nem `branch_name`; `pull_request_number` é obrigatório. |
+| **pequod** | `fb65ca1` (PR #50) | `deploy/schema.sql`: coluna `scope` + CHECK de exclusividade + índice único parcial `ux_quality_gate_runs_branch`; `wire/schemas/quality_gate_v1.py` valida consistência; `controller/quality_gate_controller.py` processa `scope` em todo o fluxo. |
+| **moby-dick** | `b6e7aa5`/`0c866c6` (PR #38) | `wire/schemas/quality_gate_v1.py` com `scope`/`branch_name`; `GitHubClient.create_issue`/`update_issue`/`find_issue_by_label`; `controller/baseline_sink_controller.py` (upsert de Issue agregada por repo+branch); `quality_gate_check_controller.py` discrimina título/texto do check por `scope`. |
+| **captain-hook** | `cdd08a6` (PR #38) | `controller/push_controller.py` (`process_push_event`); `webhook_controller.py` roteia `push` pra ele; `adapter/wire_in/push_adapter.py` (`to_baseline_context`, filtra só push na default branch); cada scanner builder ganhou `build_baseline_job` ao lado do `build_job` existente. |
 
-**Consequência prática:** um `push` na default branch hoje **não dispara nada** — nem chega a gerar o evento que o pequod saberia processar. Só `scope=pr` funciona de ponta a ponta em produção.
+**Follow-ups já mergeados depois do rollout inicial:**
+- captain-hook `110b950` (PR #42): removeu `scanner_job_id` morto/duplicado em `push_adapter.py`.
+- captain-hook `c350c52` / moby-dick `a982c3f` (docs, 09/set): READMEs atualizados descrevendo o fluxo de push/baseline.
 
-**Por quê a feature ficou pela metade:** o plano de rollout original (descrito no PR do moby-dick) previa a ordem pequod → moby-dick → captain-hook. Pequod e moby-dick foram mergeados nessa ordem, mas o captain-hook (a peça que efetivamente dispara tudo a partir do evento `push` do GitHub) nunca foi integrado — e o lado do moby-dick, ficando órfão (código pronto que nada aciona), acabou sendo removido de `main` em algum momento não documentado.
+**Kill switch:** `moby-dick` tem `BASELINE_ISSUE_SINK_ENABLED` (default `true`) — desliga só o sink de Issue, não o check_run nem a avaliação do gate em si.
 
-**Gap detalhado e plano de recuperação:** ver `TODO.md` (raiz do monorepo local, item 2) — lista os arquivos exatos a recuperar/reimplementar em captain-hook e moby-dick, na ordem certa, com os PRs de referência (fechados, mas com diff ainda visível no GitHub).
+!!! danger "Nota de processo: uma revisão anterior desta seção, feita ainda hoje (2026-09-10), concluiu erroneamente que isso NÃO estava em `main`"
+    Essa verificação anterior rodou `git merge-base --is-ancestor` **contra os clones locais do monorepo**, que estavam com os refs de `origin/main` desatualizados (cacheados de antes do rollout de 31/ago — o sandbox não tem acesso de rede a `git fetch`/`git pull` via SSH nem HTTPS, então refs locais só refletem o que já foi baixado antes). Isso deu falso-negativo: os commits pareciam não-ancestrais de uma `main` que, na verdade, já não existia mais (tinha avançado). A checagem correta — feita depois, via GitHub API (`list_commits` direto em `main`, e leitura do conteúdo real dos arquivos em `refs/heads/main`) — confirma que os três repositórios estão sincronizados e a feature funciona de ponta a ponta desde 31/ago/2026. Pedimos desculpas pelo ruído: por um período dentro desta mesma sessão, o `aspm-docs` chegou a ser corrigido para dizer o contrário ("não está em main") — essa correção foi revertida por esta revisão. **Lição registrada:** para verificar o estado real de um repositório remoto, usar a API do GitHub (ou pedir ao usuário pra rodar `git fetch` fora do sandbox) em vez de `git merge-base` local quando o sandbox não tem rede pra atualizar os refs.
 
 ---
 
@@ -210,8 +207,7 @@ Sem mudanças — decisão ainda vigente como descrita.
 ## Open questions
 
 - Onde mora a configuração por repo (`.aspm.yml`?) quando precisarmos rotear scanners diferentes por projeto (hoje é tudo por env var global, `ENABLE_*_SCAN`)
-- **Recuperar/reimplementar Security Baseline em captain-hook e moby-dick** (§15 — hoje não roda em nenhum evento; pequod já está pronto). Prioridade alta, plano detalhado no `TODO.md` local.
-- Gatilho de Security Baseline no onboarding de repositório — bloqueado até o item acima estar de pé (hoje nem o gatilho por `push` funciona, então "onboarding" seria um segundo gatilho pra uma feature que ainda não existe)
+- Sink de Security Baseline por `consolidated_risk` (1 Issue por risco) em vez da Issue agregada atual por (repo, branch) — depende do pequod expor leitura/atualização de `consolidated_risk` filtrada por (application_id, branch); colunas `consolidated_risk.github_issue_number`/`github_issue_url` já existem no schema esperando esse mapping (ver §15 e follow-up citado no commit do moby-dick).
 - Estratégia de retenção de SARIF cru agora que o pequod é o agregador (`sarif_raw` já foi removido como coluna persistida no schema — recomposto via `finding_occurrences.raw_payload`)
 - Métricas / observability formal (Prometheus? OTEL?) — moby-dick e pequod já expõem cada um seu próprio `GET /metrics/quality-gate`, mas não em formato Prometheus
 - Plataforma definitiva pra prod (continuar VPS? K8s? Railway?)
@@ -224,8 +220,6 @@ Sem mudanças — decisão ainda vigente como descrita.
 - ~~Enriquecimento por IA~~ → TARS AI, via REST contra pequod (§17)
 - ~~Correlação cross-scanner~~ → candidate clustering determinístico no pequod + clustering semântico no TARS AI
 - ~~UI de triagem~~ → heimdall-dashboard (§18)
-
-**Corrigido nesta revisão (2026-09-10), não resolvido — voltou a ser open question:**
-- Security Baseline (§15) — estava listada implicitamente como resolvida em versões anteriores desta página; na verdade nunca funcionou de ponta a ponta em produção.
+- ~~Security Baseline (`scope=branch`) em captain-hook/moby-dick~~ → confirmado em `main` desde 31/ago/2026 nos três repositórios (§15). Uma dúvida levantada ainda hoje sobre isso veio de uma checagem local com refs desatualizadas, não de uma regressão real — ver nota de processo em §15.
 
 Atualizar este documento quando uma das perguntas abertas virar decisão.
