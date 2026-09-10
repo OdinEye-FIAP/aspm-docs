@@ -40,7 +40,7 @@ O ASPM-AI da OdinEye-FIAP construiu essa plataforma do zero, com foco em:
 2. **Modularidade extrema** — scanners stateless, schemas versionados, serviços trocáveis. Confirmado na prática: 3 scanners novos (semgrep/trivy/zap) chegaram sem tocar em moby-dick nem pequod
 3. **Containers isolados por scan** — cada finding nasce de um container efêmero, um por scanner
 4. **Stack moderna** — Python (FastAPI), Pydantic, aiokafka, Docker SDK, React/Vite no frontend
-5. **PR feedback + dashboard de governança**, já ponta a ponta. Uma terceira perna — Security Baseline da default branch — tem o lado de storage/governança pronto no pequod, mas ainda não o lado de ingest/orquestração (captain-hook/moby-dick) — ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova). Corrigido 2026-09-10: uma versão anterior desta página dizia que "as três pernas já existem".
+5. **PR feedback + Security Baseline + dashboard de governança**, as três pernas já existem e estão em produção de ponta a ponta desde 31/ago/2026 — ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10)
 
 ## O que **não** é
 
@@ -56,7 +56,7 @@ O ASPM-AI da OdinEye-FIAP construiu essa plataforma do zero, com foco em:
 | Fase 0 — Pipeline GitHub → Kafka → Sonar | ✅ concluída |
 | Fase 1 — Schema unificado + storage central de findings | ✅ concluída (pequod) |
 | Fase 2 — Multi-scanner (Semgrep/Trivy/ZAP) | ✅ concluída |
-| Fase 2.5 — Quality Gate com Security Baseline (`scope=pr`/`branch`) | ⏳ parcial — `scope=pr` concluído; `scope=branch` completo só no pequod, pendente em captain-hook e moby-dick (não roda em `main`) |
+| Fase 2.5 — Quality Gate com Security Baseline (`scope=pr`/`branch`) | ✅ concluída — ponta a ponta em `main` nos três repositórios desde 31/ago/2026 |
 | Fase 3 — Triagem automática por IA (LLM) | ✅ concluída (tars-ai + Gemini) |
 | Fase 3.5 — Clustering semântico + risco consolidado | ✅ concluída |
 | Fase 3.75 — Dashboard de governança (heimdall-dashboard) | ✅ concluída |
@@ -64,7 +64,8 @@ O ASPM-AI da OdinEye-FIAP construiu essa plataforma do zero, com foco em:
 | Fase 4 — Fix suggestions automáticos | ⏳ não iniciada |
 | Fase 5 — Risk scoring com criticidade de negócio + SLA | ⏳ não iniciada |
 
-O roadmap avançou mais rápido do que uma versão bem anterior desta página previa em vários pontos (a IA, por exemplo, já está em produção há tempo). Uma correção em 2026-09-10 rebaixou a Fase 2.5 de "✅ concluída" para "⏳ parcial", depois de uma investigação direta no GitHub e no código mostrar que o lado de ingest/orquestração do Security Baseline (captain-hook + moby-dick) nunca chegou a `main` — só o lado do pequod está pronto.
+!!! note "Sobre a Fase 2.5"
+    Esta página teve, por algumas horas nesta mesma revisão (2026-09-10), uma versão que rebaixava a Fase 2.5 para "parcial", concluindo que Security Baseline não estava em `main`. Essa conclusão veio de uma verificação com refs git locais desatualizadas (sem acesso de rede pra `git fetch`) — checando direto pela API do GitHub, a feature está em `main` nos três repositórios desde 31/ago/2026. Ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico completo.
 
 ## Princípios técnicos
 
