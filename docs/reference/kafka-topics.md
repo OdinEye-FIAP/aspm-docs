@@ -25,7 +25,7 @@ Stack atual: **Redpanda** (Kafka-compatible), single-node, sem replicação. Rod
 **Value:** [`JobDescriptor v1`](job-descriptor.md).
 
 !!! warning "Não é mais 1 mensagem por PR"
-    Um único evento de PR gera **uma mensagem por scanner habilitado** (Sonar sempre + Semgrep/Trivy/ZAP condicionados a `ENABLE_SEMGREP_SCAN`/`ENABLE_TRIVY_SCAN`/`ENABLE_ZAP_SCAN`). moby-dick roda até `SCANNER_MAX_CONCURRENCY=4` desses jobs em paralelo.
+    Um único evento de PR (ou push na default branch, Security Baseline) gera **uma mensagem por scanner habilitado** (Sonar sempre + Semgrep/Trivy/ZAP condicionados a `ENABLE_SEMGREP_SCAN`/`ENABLE_TRIVY_SCAN`/`ENABLE_ZAP_SCAN`). moby-dick roda até `SCANNER_MAX_CONCURRENCY=4` desses jobs em paralelo.
 
 ### `repository.registered.v1`
 
@@ -43,10 +43,10 @@ Stack atual: **Redpanda** (Kafka-compatible), single-node, sem replicação. Rod
 
 **Producer:** captain-hook · **Consumer:** moby-dick · **Key:** `repo_full_name`
 
-**Propósito:** sinaliza o início de um workflow de quality gate para um PR.
+**Propósito:** sinaliza o início de um workflow de quality gate — tanto para um PR (`scope=pr`) quanto para um push na default branch (`scope=branch`, Security Baseline).
 
-!!! warning "Sem `scope=branch` em produção (corrigido 2026-09-10)"
-    O pequod já sabe processar esse evento com `scope=branch` (Security Baseline) — schema, validação e controller estão prontos em `main`. Mas captain-hook (o produtor) nunca chegou a publicar esse evento a partir de um `push`: três tentativas de PR ficaram sem merge. Hoje este tópico só carrega eventos com `scope=pr`, implícito. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova) e o `TODO.md` da raiz do monorepo local para o gap detalhado.
+!!! note "`scope=branch` confirmado em produção (reconfirmado 2026-09-10)"
+    captain-hook publica este evento com `scope=branch` a partir de `controller/push_controller.py` sempre que há push na default branch do repositório (filtro estrito em `adapter/wire_in/push_adapter.py::to_baseline_context`). moby-dick e pequod processam os dois escopos de ponta a ponta desde 31/ago/2026. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10).
 
 ### `findings.raw`
 
