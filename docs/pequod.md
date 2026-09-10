@@ -163,7 +163,7 @@ Todo `quality_gate_runs` tem um `scope`: `pr` (padrão, exige `pull_request_numb
 
 ## Schema (`deploy/schema.sql`)
 
-Schema consolidado do PostgreSQL (22 tabelas), aplicado do zero via `docker-entrypoint-initdb.d`. Substitui as antigas migrations incrementais (`deploy/migrations/001..016`) — ver [Schema do banco](reference/database-schema.md) para o detalhe completo de tabelas e colunas.
+Schema consolidado do PostgreSQL (23 tabelas), aplicado do zero via `docker-entrypoint-initdb.d`. Substitui as antigas migrations incrementais (`deploy/migrations/001..016`) — ver [Schema do banco](reference/database-schema.md) para o detalhe completo de tabelas e colunas.
 
 ## Dedup
 

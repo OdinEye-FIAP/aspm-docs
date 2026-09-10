@@ -36,8 +36,8 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 Eventos sem processamento dedicado são logados e descartados — não fazem o webhook retornar erro.
 
-!!! warning "Push só dispara Security Baseline na default branch"
-    `adapter/wire_in/push_adapter.py::to_baseline_context` filtra estritamente `refs/heads/{repository.default_branch}`, ignora `deleted=true` e commits vazios. Push em feature branch, tag ou delete de branch não gera nenhum job. Ver também [onboarding de repositório](integration/onboarding-repo.md).
+!!! note "Push só dispara Security Baseline na default branch"
+    `adapter/wire_in/push_adapter.py::to_baseline_context` filtra estritamente `refs/heads/{repository.default_branch}`, ignora `deleted=true` e commits vazios (`after` zerado). Push em feature branch, tag ou delete de branch não gera nenhum job — o webhook é recebido, mas `to_baseline_context` retorna `None` e `process_push_event` só loga "push ignorado". Confirmado em `main` desde 31/ago/2026 (PR #38) — ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10). Ver também [onboarding de repositório](integration/onboarding-repo.md).
 
 ## Scanners disparados
 
@@ -50,7 +50,7 @@ Cada evento relevante (`pull_request` relevante ou `push` na default branch) mon
 | Trivy SCA | opcional | `ENABLE_TRIVY_SCAN` | `trivy_scan` |
 | OWASP ZAP DAST | opcional | `ENABLE_ZAP_SCAN` (+ `ZAP_TARGET_URL` obrigatório se `DAST_MODE=fixed_url`) | `zap_scan` |
 
-Cada scanner tem seu builder próprio em `adapter/wire_out/scanners/{sonar,semgrep,trivy,zap}_scanner.py`, com duas funções: `build_job` (scope=`pr`, chamado por `pull_request_controller`) e `build_baseline_job` (scope=`branch`, chamado por `push_controller`). Ver [Adicionar novo scanner](developer/adding-a-scanner.md) para o padrão completo.
+Cada scanner tem seu builder próprio em `adapter/wire_out/scanners/{sonar,semgrep,trivy,zap}_scanner.py`, com duas funções: `build_job` (scope=`pr`, chamado por `pull_request_controller`) e `build_baseline_job` (scope=`branch`, chamado por `push_controller`) — mesma matriz de feature flags nos dois casos, só muda o contexto (sem `SONAR_PULLREQUEST_*`/`base_ref` no baseline). Ver [Adicionar novo scanner](developer/adding-a-scanner.md) para o padrão completo.
 
 !!! tip "SONAR_PROJECT_KEY"
     `SONAR_PROJECT_KEY` é sempre `f"gh_{repository.id}"`, montado em `adapter/wire_out/scanners/sonar_scanner.py` (`build_job`/`build_baseline_job`). `repository.id` é imutável no GitHub — sobrevive a rename/transfer. Ver [Decisão §13](overview/decisions.md#13-sonar_project_key-derivado-de-githubrepositoryid) e [JobDescriptor](reference/job-descriptor.md#convenção-sonar_project_key).

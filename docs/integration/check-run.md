@@ -1,18 +1,18 @@
 # Entendendo o check_run no PR
 
-Como ler o feedback do ASPM-AI no seu PR.
+Como ler o feedback do ASPM-AI no seu PR (ou num push na default branch, para o Security Baseline).
 
 !!! note "Dois níveis de check hoje"
-    Desde a introdução do Quality Gate multi-scanner, o PR mostra **dois tipos de check**:
+    Desde a introdução do Quality Gate multi-scanner, o PR (ou commit, no caso do Security Baseline) mostra **dois tipos de check**:
 
     1. **Checks individuais**, um por scanner habilitado (`SonarQube Scan`, `Semgrep SAST`, `Trivy SCA`, `OWASP ZAP DAST` — ou as variantes `*-Baseline` num push na default branch). Criados/atualizados pelo `moby-dick` (`controller/job_controller.py`) a cada scanner executado.
-    2. **Check consolidado** `OdinEye / Quality Gate` (nome configurável via `QUALITY_GATE_CHECK_NAME` no moby-dick), que agrega o resultado de todos os scanners esperados e é a fonte de decisão para bloqueio de merge (`controller/quality_gate_check_controller.py`).
+    2. **Check consolidado** `OdinEye / Quality Gate` (ou `Security Baseline ...` quando `scope=branch`; nome configurável via `QUALITY_GATE_CHECK_NAME` no moby-dick), que agrega o resultado de todos os scanners esperados e é a fonte de decisão para bloqueio de merge (`controller/quality_gate_check_controller.py`).
 
     Se você só configurou branch protection com um scanner específico, use o check individual dele. Para bloquear merge com base no Quality Gate completo (todos os scanners), use `OdinEye / Quality Gate`.
 
 ## Onde aparece
 
-Aba **Checks** do PR no GitHub. Você verá algo como:
+Aba **Checks** do PR no GitHub (ou do commit, para Security Baseline). Você verá algo como:
 
 ```
 OdinEye / Quality Gate     ← consolidado
@@ -47,11 +47,11 @@ Criado quando `captain-hook` publica `quality-gate.workflow.started.v1` (1 por P
 O `output.text` do check consolidado traz: decisão, política aplicada (`policy_name`/`policy_version`), contagem de findings avaliados/bloqueantes/avisos/ignorados, e quantos scanners esperados completaram/falharam/foram cancelados/deram timeout.
 
 !!! tip "Security Baseline (push na default branch)"
-    Quando o gate é disparado por `push` (scope=`branch`, não por PR), o check consolidado é criado **no commit** (não há PR) com título `Security Baseline ...`. Além do check, o `moby-dick` faz upsert de uma **Issue** agregada no repositório (label `aspm-baseline:<branch>`), porque um check em commit avulso tem visibilidade baixa — a Issue aparece nas notificações padrão do GitHub. A Issue é atualizada a cada novo push na mesma branch e só é reaberta automaticamente se um baseline seguinte reprovar (`failed`/`error`) depois de o dev tê-la fechado manualmente.
+    Quando o gate é disparado por `push` (scope=`branch`, não por PR), o check consolidado é criado **no commit** (não há PR) com título `Security Baseline ...`. Além do check, o `moby-dick` faz upsert de uma **Issue** agregada no repositório (label `aspm-baseline:<branch>`), porque um check em commit avulso tem visibilidade baixa — a Issue aparece nas notificações padrão do GitHub. A Issue é atualizada a cada novo push na mesma branch e só é reaberta automaticamente se um baseline seguinte reprovar (`failed`/`error`) depois de o dev tê-la fechado manualmente. Confirmado em `main` desde 31/ago/2026 — ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10).
 
 ## Check individual — por scanner
 
-Cada scanner tem seu próprio check (`external_id` = `job_id`, então redeliveries do Kafka não duplicam o check). Estados explicados:
+Cada scanner tem seu próprio check (`external_id` = `job_id`, entao redeliveries do Kafka não duplicam o check). Estados explicados:
 
 ### ⏳ `In progress`
 
@@ -132,13 +132,14 @@ Sem SARIF (scanner morreu antes de escrever o arquivo): só os logs tail, em cod
 Vide [decisão #7](../overview/decisions.md#7-modo-de-scan-análise-principal-sem-pr-mode).
 
 - ❌ **Sem inline comments nativos do Sonar** no PR (feature paga) — mitigado pelas anotações do check_run, que vêm do SARIF construído a partir da API do Sonar
-- ❌ **Sem decoration visual no Sonar UI por PR** (last scan wins)
-- ❌ **Sem comparação delta no Sonar:** avalia o código todo, não só o diff do PR (Semgrep/Trivy/ZAP não têm essa limitação — rodam full-scan por natureza)
+- ❌ **Sem decoration visual no Sonar UI por PR** (last scan wins — vale também entre PRs diferentes e pushes de Security Baseline, todos no mesmo `projectKey`)
+- ❌ **Sem comparação delta no Sonar:** avalia o código todo, não só o diff do PR (Semgrep/Trivy/ZAP não têm essa limitação — rodam full-scan por natureza, igual ao Security Baseline)
 
 O que **funciona**:
 - ✅ check individual por scanner + check consolidado do Quality Gate (verde/amarelo/vermelho)
 - ✅ Branch protection (bloqueio de merge se exigir o check consolidado verde)
 - ✅ Anotações inline por finding, com correção sugerida quando o scanner oferece
+- ✅ Security Baseline (push na default branch) com Issue agregada — ver tip acima
 
 ## Como o check_run é produzido (interno)
 
@@ -248,10 +249,10 @@ stateDiagram-v2
 
     note left of Failed
         Quando scope=branch (Security Baseline):
-        também upsert de uma Issue agregada
+        tambem upsert de uma Issue agregada
         (label aspm-baseline:<branch>), reaberta
         automaticamente se um baseline seguinte
-        reprovar depois de o dev tê-la fechado
+        reprovar depois de o dev te-la fechado
     end note
 ```
 

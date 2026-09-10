@@ -17,11 +17,14 @@ python3 main.py
 - Criar containers de scanner (Docker SDK) e extrair o SARIF produzido em `${SARIF_OUTPUT_PATH}`
 - Publicar `findings.raw` no Kafka
 - Criar/atualizar o **check individual** do scanner (`external_id=job_id`, nome vindo de `job.context.callback.name`)
-- Consumir `quality-gate.workflow.started.v1` e criar/reconciliar o **check consolidado** (`OdinEye / Quality Gate`)
+- Consumir `quality-gate.workflow.started.v1` e criar/reconciliar o **check consolidado** (`OdinEye / Quality Gate`, ou `Security Baseline ...` quando `scope=branch`)
 - Depois de cada scanner concluir, chamar **sincronamente** o pequod (`POST /api/v1/internal/quality-gates/{workflow_id}/evaluate`) para tentar finalizar o Quality Gate; se finalizado, atualiza o check consolidado imediatamente
 - Consumir `quality-gate.evaluated.v1` apenas como **rede de segurança** (fallback) — não é mais o caminho principal de finalização
-- Quando `scope=branch` (Security Baseline), fazer upsert de uma Issue agregada por (repo, branch) no repositório alvo (`controller/baseline_sink_controller.py`)
+- Quando `scope=branch` (Security Baseline), fazer upsert de uma Issue agregada por (repo, branch) no repositório alvo (`controller/baseline_sink_controller.py`) — best-effort, não bloqueia a atualização do check_run se falhar. Kill switch: `BASELINE_ISSUE_SINK_ENABLED` (default `true`)
 - Expor `GET /metrics/quality-gate` — contadores in-memory (checks criados/reconciliados/completados por decisão, replays ignorados)
+
+!!! note "Confirmado em `main` (reconfirmado 2026-09-10)"
+    `baseline_sink_controller.py` e os campos `scope`/`branch_name` em `wire/schemas/quality_gate_v1.py` estão em `main` desde 31/ago/2026 (PR #38), junto com o rollout equivalente em captain-hook e pequod. Ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico completo (inclui uma verificação que, mais tarde na mesma data, concluiu erroneamente o contrário a partir de refs git locais desatualizadas — já corrigida).
 
 ## Subsistema de Quality Gate
 
@@ -52,9 +55,13 @@ Dois consumers Kafka distintos rodam dentro do `moby-dick`:
 | Consumer | Consumer group | Tópicos assinados | Papel |
 |---|---|---|---|
 | `JobConsumer` | `moby-dick` | `jobs.orchestration` | executa scanners, publica `findings.raw` + `quality-gate.scanner.completed.v1` |
-| `QualityGateConsumer` | `moby-dick-quality-gate` | `quality-gate.workflow.started.v1`, `quality-gate.evaluated.v1` | cria/reconcilia o check consolidado (`workflow.started`) e cobre a finalização como fallback (`evaluated`) |
+| `QualityGateConsumer` | `moby-dick-quality-gate` | `quality-gate.workflow.started.v1`, `quality-gate.evaluated.v1` | cria/reconcilia o check consolidado (`workflow.started`) e cobre a finalização como fallback (`evaluated`); dispara o sink de Issue quando `scope=branch` |
 
 Cliente HTTP: `diplomat/http_out/pequod_client.py` (`PequodClient.evaluate_quality_gate`), com retry exponencial (`PEQUOD_API_MAX_ATTEMPTS`/`PEQUOD_API_RETRY_BASE_SECONDS`) em 429/5xx/erro de conexão; `404` (workflow_id desconhecido no pequod) não é retryable e levanta `PequodClientError` direto.
+
+## Security Baseline (`scope=branch`)
+
+Quando `process_quality_gate_evaluated` recebe um evento com `scope="branch"`, além de atualizar o check_run (criado no commit, não num PR), chama `baseline_sink_controller.upsert_baseline_issue`: busca por label estável (`aspm-baseline:<branch>`) via `GitHubClient.find_issue_by_label`, cria a Issue se não existir ou atualiza o corpo/labels se existir. Só reabre uma Issue fechada manualmente pelo dev quando o baseline atual reprova (`failed`/`error`) — uma regressão real. Kill switch: `BASELINE_ISSUE_SINK_ENABLED` (default `true`, sem env var dedicada em `.env.example` hoje).
 
 ## Scanners suportados
 
@@ -105,6 +112,7 @@ flowchart LR
   MD -->|POST evaluate quality-gate síncrono| PQ
   PQ -->|ready=true: QualityGateEvaluatedEvent| MD
   MD -->|update check_run consolidado + individual| GH
+  MD -->|upsert Issue de baseline (scope=branch)| GH
   K -->|consume evaluated fallback| MD
 ```
 

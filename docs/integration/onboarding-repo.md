@@ -70,7 +70,7 @@ DAST_MODE=fixed_url          # ou compose_preview
 ZAP_TARGET_URL=https://staging.meu-servico.exemplo   # obrigatório se DAST_MODE=fixed_url
 ```
 
-Isso é configuração **global do captain-hook**, não por repositório — vale para todos os repos onboardados na mesma instância. Ver [Adicionar novo scanner](../developer/adding-a-scanner.md) para o detalhe de cada flag.
+Isso é configuração **global do captain-hook**, não por repositório — vale para todos os repos onboardados na mesma instância (PR e Security Baseline usam a mesma matriz de flags). Ver [Adicionar novo scanner](../developer/adding-a-scanner.md) para o detalhe de cada flag.
 
 !!! warning "`DAST_MODE=compose_preview` exige `docker-compose.aspm.yml` real"
     Se optar por `compose_preview`, o arquivo scaffoldado pelo auto-scaffold (Passo 1) é um **skeleton não funcional** — precisa de ajustes (porta, build, healthcheck) antes do ZAP conseguir subir e escanear a preview do seu repo.
@@ -218,7 +218,7 @@ Se seu repo usa `master` ou outra branch como principal, e o projeto no Sonar fo
 
 ### Push direto na default branch dispara o Security Baseline
 
-Diferente de versões anteriores desta documentação: `push` na default branch **não é ignorado**. Ele dispara o Security Baseline (scope=`branch`) — mesma matriz de scanners habilitados, full-branch scan, check_run no commit + Issue agregada no repo. Ver Passo 7. Push em outras branches (feature, etc.) continua sem disparar nada.
+`push` na default branch **não é ignorado**. Ele dispara o Security Baseline (scope=`branch`) — mesma matriz de scanners habilitados, full-branch scan, check_run no commit + Issue agregada no repo. Ver Passo 7. Push em outras branches (feature, etc.) continua sem disparar nada — `to_baseline_context` filtra estritamente pela default branch.
 
 ### Repos privados funcionam
 

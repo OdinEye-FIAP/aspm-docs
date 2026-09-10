@@ -42,7 +42,7 @@ flowchart TB
     MD -->|consume jobs.orchestration| RP
     MD -->|spawn até 4 em paralelo| SR
     MD -->|publish findings.raw SARIF| RP
-    MD -->|check-runs API| GH
+    MD -->|check-runs API + Issue de baseline| GH
     MD <-->|"POST /internal/quality-gates/{id}/evaluate"| PQ
     PQ -->|consume findings.raw| RP
     PQ -->|upsert findings + governança| PDB
@@ -101,8 +101,8 @@ sequenceDiagram
     GH-->>Dev: check verde/vermelho
 ```
 
-!!! info "Security Baseline (push na default branch)"
-    O mesmo fluxo roda com `scope=branch` quando há `push` direto na default branch (sem PR aberto) — captain-hook (`controller/push_controller.py`) monta o `JobDescriptor` com `branch_name` em vez de `pull_request_number`, e moby-dick agrega o resultado numa Issue do GitHub (`baseline_issue_sink_enabled`), em vez de um `check_run` de PR.
+!!! note "Security Baseline (push na default branch) — confirmado em `main` (reconfirmado 2026-09-10)"
+    Um `push` na default branch dispara o mesmo diagrama acima com duas diferenças: não há PR (o check consolidado "Security Baseline" é criado no commit, não num PR) e, ao final, o `moby-dick` faz upsert de uma **Issue agregada** por (repo, branch) no repositório, via `controller/baseline_sink_controller.py` (kill switch: `BASELINE_ISSUE_SINK_ENABLED`, default `true`). Confirmado ponta a ponta nos três repositórios (captain-hook, moby-dick, pequod) desde 31/ago/2026 — ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico (incluindo uma verificação falha, feita e corrigida ainda hoje, que tinha concluҮdo o contrário a partir de refs git locais desatualizadas).
 
 ## Direção arquitetural — responsabilidade por camada
 
@@ -128,7 +128,7 @@ Containers são efêmeros. Vivem segundos a minutos. Sem volumes persistentes, s
 
 ### 3. Schemas versionados
 
-`wire/schemas/job_v1.py` é o contrato entre captain-hook e moby-dick — hoje inclui `scope` (`pr`/`branch`), `application_id` e bloco `quality_gate`. Ver [JobDescriptor](../reference/job-descriptor.md).
+`wire/schemas/job_v1.py` (captain-hook/moby-dick) e `wire/schemas/quality_gate_v1.py` (compartilhado entre os três) são os contratos entre captain-hook, moby-dick e pequod. Ambos já incluem `scope`/`application_id`/`branch_name` em `main` — aditivos e opcionais, preservando compat com o fluxo `scope=pr` original. Ver [JobDescriptor](../reference/job-descriptor.md) e a nota de Security Baseline acima.
 
 ### 4. Token efêmero, fronteiras curtas
 
@@ -147,17 +147,18 @@ Tudo no mesmo bridge user-defined (`aspm-net`).
 
 | Tópico | Producer | Consumer | Propósito |
 |---|---|---|---|
-| `github.events.raw` | captain-hook | (audit only) | payload bruto do webhook |
-| `jobs.orchestration` | captain-hook | moby-dick | [`JobDescriptor v1`](../reference/job-descriptor.md), 1 msg por scanner habilitado |
+| `jobs.orchestration` | captain-hook | moby-dick | [`JobDescriptor v1`](../reference/job-descriptor.md), 1 msg por scanner habilitado — tanto para PR (`scope=pr`) quanto para push na default branch (`scope=branch`) |
 | `repository.registered.v1` | captain-hook | pequod | registro de repositório (evento `installation`/ping) |
 | `repository.unregistered.v1` | captain-hook | pequod | baixa de repositório |
-| `quality-gate.workflow.started.v1` | captain-hook | moby-dick | início de um workflow de quality gate (PR ou baseline) |
+| `quality-gate.workflow.started.v1` | captain-hook | moby-dick | início de um workflow de quality gate (PR ou Security Baseline) |
 | `findings.raw` | moby-dick | pequod | SARIF normalizado pós-scan |
 | `quality-gate.scanner.completed.v1` | moby-dick | pequod | fallback assíncrono por scanner concluído |
 | `quality-gate.evaluated.v1` | pequod | (rede de segurança) | decisão final, só publicado quando não há chamada HTTP síncrona em andamento |
-| `jobs.orchestration.dlq` / `quality-gate.moby-dick.dlq` | moby-dick | — | dead-letter queues |
 
-Ver [referência completa de tópicos](../reference/kafka-topics.md).
+!!! note "Correção 2026-09-10"
+    Uma versão anterior desta tabela listava um tópico `github.events.raw` (payload bruto do webhook, "audit only"). Esse tópico **não existe no código** — não há string, setting nem publish em nenhum dos 5 serviços. Era uma invenção que se propagou pela documentação sem verificação contra o código real. Removido.
+
+Para a lista completa de tópicos e as dead-letter queues (bem mais numerosas do que esta tabela resumida sugere), ver [referência completa de tópicos](../reference/kafka-topics.md).
 
 ## Onde mora o quê
 
@@ -179,8 +180,8 @@ Ver [referência completa de tópicos](../reference/kafka-topics.md).
 - ✅ **Findings store central** — `pequod`, com governança completa (risk exceptions, security gate, quality gate, consolidated risk)
 - ✅ **Schema unificado de findings** — `Finding v1`, fingerprint determinístico por `repo_id`
 - ✅ **Extração SARIF dentro da scanner image** — concluído para os 4 scanners
-- ✅ **Multi-scanner** — sonar + semgrep + trivy + zap, fan-out por PR
-- ✅ **Quality Gate com Security Baseline** — `scope=pr` e `scope=branch`
+- ✅ **Multi-scanner** — sonar + semgrep + trivy + zap, fan-out por PR e por Security Baseline
+- ✅ **Quality Gate com Security Baseline (`scope=branch`)** — ponta a ponta nos três repositórios desde 31/ago/2026: captain-hook dispara a partir do `push`, moby-dick roda os scanners e faz upsert da Issue agregada, pequod avalia o gate. Ver [Decisão §15](decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10).
 - ✅ **Enriquecimento por IA** — `tars-ai`, triagem individual + clustering semântico (Gemini)
 - ✅ **UI de triagem/governança** — `heimdall-dashboard`
 - ❌ **Correlação cross-scanner via embeddings/grafo mais amplo** — hoje é candidate clustering determinístico + clustering semântico via TARS; um grafo de correlação mais geral não existe
