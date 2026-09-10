@@ -3,7 +3,7 @@
 Como adicionar um repo da org pra que ele receba scan automático em todo PR.
 
 !!! note "Security Baseline (push na default branch) — ainda não disponível"
-    Uma versão anterior desta página descrevia também um "Security Baseline" disparado por `push` direto na default branch (full-branch scan). O pequod já tem suporte completo a esse fluxo (`scope=branch`), mas capt`ain-hook e moby-dick ainda não o implementam em `main` — um push hoje não dispara nenhum scan. Este onboarding cobre apenas o que funciona hoje: scan em PR. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova).
+    Uma versão anterior desta página descrevia também um "Security Baseline" disparado por `push` direto na default branch (full-branch scan). O pequod já tem suporte completo a esse fluxo (`scope=branch`), mas captain-hook e moby-dick ainda não o implementam em `main` — um push hoje não dispara nenhum scan. Este onboarding cobre apenas o que funciona hoje: scan em PR. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--nova).
 
 ## Pré-requisitos
 
