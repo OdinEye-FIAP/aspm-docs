@@ -29,10 +29,13 @@ resposta ao GitHub.
    webhook já teve sucesso).
 2. **Escopo:** quando a App é instalada num repo/org, ou quando `ping`
    dispara, hoje **nada roda scanner nenhum** no `main` do repositório —
-   só o registro no inventário (+ auto-scaffold, só no `ping` individual).
-   O primeiro Security Baseline (scope=`branch`) só acontece no próximo
-   `push` na default branch, o que pode nunca acontecer logo após o
-   onboarding.
+   só o registro no inventário. O primeiro Security Baseline (scope=`branch`)
+   só acontece no próximo `push` na default branch, o que pode nunca
+   acontecer logo após o onboarding. Além disso, o auto-scaffold (PR
+   sugerindo lint/CI de baseline) hoje só dispara pelo `ping` individual
+   (`ping_controller.py:52-58`) — repositórios registrados em massa via
+   `installation`/`installation_repositories` nunca recebem esse PR
+   automaticamente, só via endpoint manual (`repository_scaffold_handler.py`).
 3. **Consistência de resposta ao GitHub (levantado 2026-09-11):** `installation`
    já responde `200 OK` **antes** de processar (tudo em `background_tasks`);
    `ping` responde `200 OK` só **depois** de processar tudo de forma síncrona
@@ -53,7 +56,10 @@ resposta ao GitHub.
   `installation_repositories` (ações de registro), reaproveitando 100% da
   máquina que já existe pro `push` (`quality-gate.workflow.started.v1` +
   `jobs.orchestration`, consumida pelo moby-dick exatamente como hoje).
-  Resolve a lacuna de escopo (2).
+  **Também** passa a disparar o auto-scaffold (mesma função já usada pelo
+  `ping`) dentro do loop de `installation`/`installation_repositories`,
+  fechando a lacuna descrita no item (2) do Contexto — levantado e
+  confirmado em 2026-09-11.
 - **Fase A/B, ajuste de consistência:** `ping` passa a responder `200 OK`
   **antes** de processar, igual `installation` — todo o trabalho (REST
   registro, GET do HEAD sha, publishes Kafka, scaffold) roda em
@@ -66,6 +72,9 @@ resposta ao GitHub.
   precisa saber) se um `jobs.orchestration` veio de um `push` real ou de
   um `ping`/`installation` — pra ele é o mesmo `JobDescriptor` com
   `scope=branch`.
+- Não muda a lógica interna de `process_repository_scaffold`
+  (`repo_scaffold_controller.py`) — a função já é agnóstica à origem do
+  trigger (só recebe owner/repo), só passa a ser chamada de um lugar novo.
 - Não implementa "listar PRs" nem o redesenho do `/live-info` — são ideias
   registradas separadamente em `decisions.md` (Open questions).
 - Não implementa tópicos Kafka por scanner — ideia registrada
@@ -81,6 +90,7 @@ resposta ao GitHub.
 | Registro deveria passar por um tópico Kafka consumido pelo moby-dick, em vez de REST direto ao pequod? | **Não** | Discutido explicitamente (2026-09-11). Trocar o destino do publish de "pequod" pra "moby-dick" **não resolve** a lacuna de confiabilidade (1) — o produtor (`captain-hook`) continua sendo o mesmo `publisher.publish()` dentro do mesmo loop de `background_tasks` que hoje engole falha silenciosamente; o problema nunca foi o consumidor. REST com retry embutido no `PequodClient` resolve porque tenta de novo *antes* de desistir, sem depender do broker estar de pé. Além disso, pequod já é chamado diretamente por 3 serviços hoje (moby-dick `/evaluate`, tars-ai `/integrations/tars/*`, heimdall-dashboard `/api/v1/*`), captain-hook virar o 4º não quebra padrão nenhum, é exatamente o cenário que motivou a auth genérica (linha acima). O que o rascunho de "tópico + moby-dick consome N repos" descreve **já existe** para o disparo de scan: é o `jobs.orchestration` da Fase B, que já é consumido por um único `JobConsumer` no moby-dick, unificado entre push/PR/ping/install, sem necessidade de tópico novo. |
 | Sonar (e demais scanners) reutilizável entre push/PR/ping/install | **Já é hoje** | `build_job`/`build_baseline_job` de cada scanner (`adapter/wire_out/scanners/*.py`) já são agnósticos à origem do trigger — não precisam mudar. |
 | `ping` deve responder o GitHub antes ou depois de processar (registro + baseline)? | **Antes — `background_tasks`, igual `installation`** (levantado 2026-09-11) | Fase A/B tornam o caminho síncrono do `ping` mais pesado (1 REST pro pequod + 1 GET no GitHub + 2 publishes Kafka antes do `200`), o que aproxima do timeout de webhook do GitHub. `installation` já usa esse padrão hoje. Trade-off aceito: falha deixa de propagar pro GitHub (sem reentrega automática) — mitigado pelo retry já embutido no `PequodClient` (Fase A) e pelo log de erro; é o mesmo trade-off que `installation` já opera com hoje, só que agora com retry, que não existia antes. |
+| Auto-scaffold deve rodar também em `installation`/`installation_repositories`, não só em `ping`? | **Sim** (levantado 2026-09-11) | Hoje o scaffold só dispara pelo `ping` porque foi implementado assim desde o início, sem relacao com REST/Kafka — repositórios que entram em massa via `installation`/`installation_repositories` nunca recebem esse PR automaticamente (só endpoint manual). Como `process_repository_scaffold` já é agnóstica à origem (só recebe owner/repo), a extensão é chamar a mesma função dentro do loop de `installation_controller.py`, sob a mesma flag `ENABLE_REPO_SCAFFOLD_PR` (default `False`) que já protege o `ping` hoje. |
 
 ## Fluxo proposto
 
@@ -91,7 +101,8 @@ não repetido seta a seta. Os dois fluxos (`ping` e `installation`) publicam
 exatamente os **mesmos dois tópicos Kafka** pro Security Baseline, na
 mesma ordem — `quality-gate.workflow.started.v1` e `jobs.orchestration`
 (nomes confirmados em `captain-hook/config/settings.py` e idênticos aos
-já documentados em `kafka-topics.md`).
+já documentados em `kafka-topics.md`) — e, a partir desta proposta, os
+dois também disparam o mesmo auto-scaffold ao final.
 
 > **Atenção — não confundir nome do tópico com `event_type` do payload:**
 > `quality-gate.workflow.started.v1` (com hífen e sufixo `.v1`) é o nome
@@ -113,6 +124,29 @@ já documentados em `kafka-topics.md`).
 > a API do GitHub dá: `GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}`
 > devolve o ref atual, de onde se extrai o sha. Sem esse `head_sha` não
 > dá pra montar o `BaselineContext`/`JobDescriptor` que o moby-dick espera.
+
+> **O que significa `PQ-->>CH: 200 (upsert + audit log)`:**
+> É a resposta do novo endpoint `/internal/repositories/register` no
+> pequod. Internamente (`process_repository_registered`, lógica
+> **inalterada** por esta proposta — só muda quem a invoca) ele faz duas
+> coisas na **mesma transação** de banco: (1) `upsert` na tabela
+> `applications`, com `ON CONFLICT (repository_provider, repository_external_id)
+> DO UPDATE` — chamar duas vezes pro mesmo repo não duplica linha, só
+> atualiza os campos; (2) `INSERT` imutável numa tabela de audit log,
+> registrando o evento de registro/atualização. Se o insert do audit log
+> falhar, o upsert também é revertido (mesma transação) — os dois ficam
+> sempre em sincronia. É exatamente o mesmo comportamento de hoje (quando
+> isso ainda é disparado por consumer Kafka); a Fase A só troca o
+> mecanismo de invocação (Kafka consumer → handler REST), não a lógica.
+>
+> **Achado à parte, fora do escopo desta proposta:** o texto do audit log
+> gravado hoje usa literalmente as strings `"application.registered_via_ping"`/
+> `"application.updated_via_ping"`, mesmo quando o registro originou de um
+> `installation`/`installation_repositories` (jah hoje, antes desta
+> proposta — o consumer é o mesmo pra ambos os triggers). Ou seja, o
+> histórico de auditoria já está impreciso pra repositórios registrados em
+> massa. Não corrigido aqui porque foge do escopo (REST + baseline); vale
+> um radar/fix separado em `decisions.md`.
 
 ### `ping`
 
@@ -160,10 +194,12 @@ sequenceDiagram
     loop por repositório (concorrência: ver "Pontos abertos")
         alt action = created | added
             CH->>PQ: POST /internal/repositories/register
+            PQ-->>CH: 200 (upsert + audit log)
             CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
             GH-->>CH: head_sha atual
             CH->>K: publish quality-gate.workflow.started.v1 (scope=branch)
             CH->>K: publish jobs.orchestration (1 por scanner habilitado, baseline)
+            CH->>CH: auto-scaffold (novo aqui — reaproveita a mesma process_repository_scaffold do ping)
         else action = deleted | removed
             CH->>PQ: POST /internal/repositories/unregister
         end
@@ -178,12 +214,14 @@ paralelo. A única dependência real de ordem é a de sempre: publicar
 do mesmo `workflow_id`, exatamente como `push_controller.py` já faz hoje —
 e mesmo essa não é rígida, porque `pequod/controller/quality_gate_controller.py::process_quality_gate_scanner_completed`
 já tolera um `scanner.completed` chegando antes do `workflow.started`
-(cria um run "provisório").
+(cria um run "provisório"). O auto-scaffold não tem dependência de ordem
+com o registro/baseline — só precisa do owner/repo, poderia até rodar em
+paralelo, mas fica após por simplicidade (mesma ordem do `ping`).
 
 Com o ajuste de consistência, `ping` e `installation` agora seguem o
 **mesmo padrão de resposta**: validação mínima de payload no request
 handler (síncrono, rápido) → `200 OK` imediato → todo o trabalho de
-rede (REST pequod, GET GitHub, publish Kafka) em `background_tasks`.
+rede (REST pequod, GET GitHub, publish Kafka, scaffold) em `background_tasks`.
 
 ## Changeset — Fase A (registro via REST)
 
@@ -214,7 +252,7 @@ rede (REST pequod, GET GitHub, publish Kafka) em `background_tasks`.
 | `controller/installation_controller.py` | `_publish_registrations_sequentially`/`_publish_unregistrations_sequentially` trocam o `publisher.publish(...)` por `get_pequod_client().register_repository(event)`/`.unregister_repository(event)`. Mantém o try/except por repositório (mesma filosofia: 1 falha não aborta o lote) — só que agora a falha só ocorre depois de esgotado o retry do `PequodClient`, não na primeira tentativa. |
 | `diplomat/messaging/kafka_producer.py` | Sem mudança — continua em uso por `jobs.orchestration`/`quality-gate.workflow.started.v1`. |
 
-## Changeset — Fase B (Security Baseline em ping/installation)
+## Changeset — Fase B (Security Baseline + auto-scaffold em ping/installation)
 
 ### captain-hook
 
@@ -222,39 +260,40 @@ rede (REST pequod, GET GitHub, publish Kafka) em `background_tasks`.
 |---|---|
 | `diplomat/http_out/github_read_client.py` (novo, ou método novo em `github_write_client.py` se fizer mais sentido reaproveitar o cliente existente) | Método pra buscar o HEAD sha atual de uma branch: `GET /repos/{owner}/{repo}/git/ref/heads/{branch}` (usa o mesmo installation token que `GitHubWriteClient` já minta pra `enrich_registrations_with_repository_details`/scaffold). |
 | `adapter/wire_in/install_baseline_adapter.py` (novo) | `to_baseline_context_from_registration(event: RepositoryRegisteredEvent, head_sha: str) -> BaselineContext` — monta o mesmo `BaselineContext` que `push_adapter.to_baseline_context` produz a partir de um push, só que a partir dos dados já disponíveis no evento de registro (que já inclui `default_branch`, vindo do payload original do webhook) + do `head_sha` buscado via API. |
-| `controller/ping_controller.py` | Dentro do mesmo background task do registro (ver Fase A acima): depois do `register_repository`, se `registration_event.default_branch` estiver preenchido, busca o HEAD sha, monta `BaselineContext`, chama a mesma `_build_baseline_jobs`/`to_baseline_workflow_started_event` que `push_controller.py` usa (extrair essas duas funções pra um módulo compartilhado, ex. `controller/baseline_jobs.py`, pra não duplicar código entre `push_controller` e `ping_controller`/`installation_controller`), publica `workflow.started` + `jobs.orchestration`. |
-| `controller/installation_controller.py` | Idem, dentro do loop por repositório, só pra `action=created`/`added` (não pra `deleted`/`removed`, óbvio). |
+| `controller/ping_controller.py` | Dentro do mesmo background task do registro (ver Fase A acima): depois do `register_repository`, se `registration_event.default_branch` estiver preenchido, busca o HEAD sha, monta `BaselineContext`, chama a mesma `_build_baseline_jobs`/`to_baseline_workflow_started_event` que `push_controller.py` usa (extrair essas duas funções pra um módulo compartilhado, ex. `controller/baseline_jobs.py`, pra não duplicar código entre `push_controller` e `ping_controller`/`installation_controller`), publica `workflow.started` + `jobs.orchestration`. Comportamento de auto-scaffold **inalterado** (já chamava `process_repository_scaffold` via `background_tasks`, continua igual). |
+| `controller/installation_controller.py` | Dentro do loop por repositório, só pra `action=created`/`added` (não pra `deleted`/`removed`, óbvio): (a) dispara Security Baseline igual ao `ping` (mesmo módulo compartilhado `baseline_jobs.py`); (b) **novo** — chama `process_repository_scaffold(owner, repo, ...)` (a mesma função já usada por `ping_controller.py`, sem nenhuma mudança nela), sob a mesma flag `ENABLE_REPO_SCAFFOLD_PR`. Isso fecha a lacuna do item (2) do Contexto: repositórios registrados em massa passam a receber o mesmo PR de scaffold que hoje só `ping` dispara. |
 | `controller/push_controller.py` | Refatorado só pra importar `_build_baseline_jobs` do módulo compartilhado em vez de definir localmente — comportamento idêntico. |
 
-**Reaproveitamento confirmado:** nenhuma mudança em `adapter/wire_out/scanners/*.py` (cada builder já tem `build_baseline_job` agnóstico à origem), nenhuma mudança em moby-dick, nenhuma mudança em pequod além da Fase A.
+**Reaproveitamento confirmado:** nenhuma mudança em `adapter/wire_out/scanners/*.py` (cada builder já tem `build_baseline_job` agnóstico à origem), nenhuma mudança em `repo_scaffold_controller.py` (`process_repository_scaffold` já é agnóstica à origem do trigger, só recebe owner/repo), nenhuma mudança em moby-dick, nenhuma mudança em pequod além da Fase A.
 
 ## Testes
 
 - pequod: unit test de `require_service_token` (aceita serviço certo, rejeita token errado, rejeita serviço não-listado em `allowed`, modo dev sem token configurado). Integration test do router novo: registro cria `application`; registro duplicado (mesmo `repository_id`) faz upsert, não duplica; unregister faz soft delete; 401 sem token.
-- captain-hook: unit test de `PequodClient` (retry em 5xx, propaga em 404, propaga depois de esgotar tentativas). Unit test de `ping_controller`/`installation_controller` com `PequodClient` mockado — cobre o caso de falha isolada não abortar o lote em `installation`, **e** o caso de `ping` responder `200` mesmo quando o background task falha (comportamento novo, precisa de teste dedicado). Fase B: teste de que `BaselineContext` sintético (via ping/install) gera o mesmo formato de `JobDescriptor` que o caminho de `push` gera pro mesmo repo/branch (só o `trigger`/`delivery_id` diferem).
-- Manual/staging: instalar a App num repo de teste (`aspm-vuln-lab` ou `clint-eastwood`) e confirmar: aplicação aparece no pequod imediatamente (sem esperar push), Security Baseline dispara e aparece Issue agregada no repo, `ping` de reconfiguração de webhook não duplica nada, `ping` responde `200` rapidamente mesmo com pequod/GitHub API lentos (validar com um delay artificial em staging).
+- captain-hook: unit test de `PequodClient` (retry em 5xx, propaga em 404, propaga depois de esgotar tentativas). Unit test de `ping_controller`/`installation_controller` com `PequodClient` mockado — cobre o caso de falha isolada não abortar o lote em `installation`, **e** o caso de `ping` responder `200` mesmo quando o background task falha (comportamento novo, precisa de teste dedicado). Fase B: teste de que `BaselineContext` sintético (via ping/install) gera o mesmo formato de `JobDescriptor` que o caminho de `push` gera pro mesmo repo/branch (só o `trigger`/`delivery_id` diferem). **Novo:** teste de que `installation_controller.py` chama `process_repository_scaffold` por repositório no loop de `created`/`added`, respeitando `ENABLE_REPO_SCAFFOLD_PR` e não duplicando PR se a branch de scaffold já existir (mesma checagem que `ping` já tem).
+- Manual/staging: instalar a App num repo de teste (`aspm-vuln-lab` ou `clint-eastwood`) e confirmar: aplicação aparece no pequod imediatamente (sem esperar push), Security Baseline dispara e aparece Issue agregada no repo, `ping` de reconfiguração de webhook não duplica nada, `ping` responde `200` rapidamente mesmo com pequod/GitHub API lentos (validar com um delay artificial em staging). **Novo:** instalar a App numa org com vários repos de uma vez (`installation` created com `repositories` com N > 1) e confirmar que cada repo recebe PR de scaffold (com `ENABLE_REPO_SCAFFOLD_PR=true`), sem duplicar se rodar de novo.
 
 ## Ordem de deploy (dentro do cutover direto)
 
 Mesmo sem dual-write, a ordem de deploy entre os dois serviços importa:
 
 1. **pequod** primeiro: adiciona o endpoint novo, mas **mantém** os consumers Kafka de registro rodando nesse deploy (aditivo, não quebra nada ainda).
-2. **captain-hook**: troca publish por REST **e** move `ping` pra `background_tasks`. A partir daqui, os tópicos `repository.registered.v1`/`.unregistered.v1` deixam de receber mensagens.
+2. **captain-hook**: troca publish por REST **e** move `ping` pra `background_tasks` **e** adiciona a chamada de scaffold no loop de `installation`. A partir daqui, os tópicos `repository.registered.v1`/`.unregistered.v1` deixam de receber mensagens.
 3. **pequod**, follow-up: remove os consumers Kafka + tópicos/DLQs das settings (agora sim, seguro — confirmado que não há mais producer).
 
 Fase B pode ir no mesmo deploy do captain-hook do passo 2, ou em um deploy seguinte — não tem dependência com a Fase A além de reaproveitar o `PequodClient`/registro já migrado. O ajuste de `ping` pra `background_tasks` deve ir junto do passo 2 (é mudança no mesmo arquivo/handler).
 
 ## Pontos abertos (decidir antes ou durante a implementação)
 
-1. **Concorrência do loop de `installation`:** hoje é sequencial (repo por repo). Trocar por HTTP síncrono deixa isso mais lento pra orgs com muitos repositórios — principalmente com a Fase B somada (cada repo agora também dispara N jobs de scanner). Manter sequencial (simples) ou paralelizar com limite de concorrência (ex. `INSTALLATION_MAX_CONCURRENCY`, no espírito do `SCANNER_MAX_CONCURRENCY` do moby-dick)? **Ainda sem decisão.**
-2. **Escopo da Fase B:** todo repositório instalado recebe Security Baseline imediato, sem exceção? Numa instalação em massa numa org grande, isso pode disparar dezenas/centenas de workflows de scan de uma vez (o Kafka + `SCANNER_MAX_CONCURRENCY` do moby-dick absorve isso com backpressure natural, mas vale confirmar se é o comportamento desejado ou se deveria ter algum controle — ex. feature flag `ENABLE_BASELINE_ON_INSTALL`, no estilo do `ENABLE_REPO_SCAFFOLD_PR`). **Ainda sem decisão — recomendo um kill switch dedicado, dado o precedente do próprio `ENABLE_REPO_SCAFFOLD_PR`.**
+1. **Concorrência do loop de `installation`:** hoje é sequencial (repo por repo). Trocar por HTTP síncrono deixa isso mais lento pra orgs com muitos repositórios — principalmente com a Fase B somada (cada repo agora também dispara N jobs de scanner **e**, a partir desta revisão, até 3 chamadas extra de API do GitHub pro scaffold — checar arquivos, criar branch, commitar, abrir PR). Manter sequencial (simples) ou paralelizar com limite de concorrência (ex. `INSTALLATION_MAX_CONCURRENCY`, no espírito do `SCANNER_MAX_CONCURRENCY` do moby-dick)? **Ainda sem decisão.**
+2. **Escopo da Fase B:** todo repositório instalado recebe Security Baseline imediato e PR de scaffold, sem exceção? Numa instalação em massa numa org grande, isso pode disparar dezenas/centenas de workflows de scan **e** dezenas/centenas de PRs de scaffold de uma vez (o scaffold já é protegido pela flag `ENABLE_REPO_SCAFFOLD_PR`, default `False` — baixo risco enquanto desligada; o Kafka + `SCANNER_MAX_CONCURRENCY` do moby-dick absorve o lado do baseline com backpressure natural). Vale confirmar se é o comportamento desejado ou se deveria ter algum controle adicional — ex. feature flag dedicada `ENABLE_BASELINE_ON_INSTALL` pro baseline, no estilo do `ENABLE_REPO_SCAFFOLD_PR` que o scaffold já tem. **Ainda sem decisão — recomendo um kill switch dedicado pro baseline, dado o precedente do próprio `ENABLE_REPO_SCAFFOLD_PR`.**
 3. **Nomes finais de settings/endpoints** listados acima são propostos, não fechados — ajustar durante a implementação se algo já existir com nome diferente.
+4. **Achado à parte, fora do escopo:** audit log de registro grava sempre `"application.registered_via_ping"`/`"application.updated_via_ping"` (`repository_registration_controller.py`), mesmo quando o trigger real foi `installation`/`installation_repositories` — já é assim hoje, antes desta proposta. Não corrigido aqui; vale registrar em `decisions.md` como fix separado.
 
 ## Documentação a atualizar depois da implementação
 
-- `docs/captain-hook.md`: os dois diagramas sequenciais de `ping`/`installation` (adicionados no PR #19) passam a refletir REST + baseline + resposta imediata via `background_tasks`, não mais só Kafka de registro.
+- `docs/captain-hook.md`: os dois diagramas sequenciais de `ping`/`installation` (adicionados no PR #19) passam a refletir REST + baseline + auto-scaffold + resposta imediata via `background_tasks`, não mais só Kafka de registro.
 - `docs/reference/kafka-topics.md`: remove `repository.registered.v1`/`.unregistered.v1` e as DLQs correspondentes.
-- `docs/reference/http-endpoints.md`: adiciona `/internal/repositories/register`/`unregister` no pequod; atualiza a lista de "Side effects" do `POST /webhook` do captain-hook; documenta que `ping` agora também responde antes de processar (como `installation`).
+- `docs/reference/http-endpoints.md`: adiciona `/internal/repositories/register`/`unregister` no pequod; atualiza a lista de "Side effects" do `POST /webhook` do captain-hook; documenta que `ping` agora também responde antes de processar (como `installation`); documenta que `installation`/`installation_repositories` agora também pode abrir PR de scaffold.
     - **Achado à parte, não relacionado a esta proposta:** esse mesmo arquivo hoje lista `github.events.raw` como side-effect "sempre" publicado pelo `/webhook` — esse tópico não existe no código (já corrigido em `architecture.md`/`kafka-topics.md`/`decisions.md`, mas este arquivo específico ficou de fora daquela correção). Vale um fix separado, pequeno, independente desta proposta.
-- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita; mover o item de "Open questions" pra "Resolvido".
+- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita; mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 4 de "Pontos abertos" acima).
 - `docs/overview/repos.md`: responsabilidades do captain-hook mencionam "publicar registro/baixa via Kafka" — atualizar pra REST.
