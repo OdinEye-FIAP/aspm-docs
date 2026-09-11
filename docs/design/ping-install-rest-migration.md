@@ -84,6 +84,11 @@ resposta ao GitHub.
 
 ## Fluxo proposto
 
+Em ambos os diagramas abaixo, toda chamada captain-hook→pequod
+(`POST /internal/repositories/register`/`/unregister`) é **REST
+síncrono, autenticado via header `X-Service-Token`** — mecanismo único,
+não repetido seta a seta.
+
 ### `ping`
 
 ```mermaid
@@ -100,7 +105,7 @@ sequenceDiagram
     Note over CH: processamento em background_tasks (agora igual installation)
 
     alt payload utilizável (repo individual)
-        CH->>PQ: POST /internal/repositories/register (síncrono, X-Service-Token)
+        CH->>PQ: POST /internal/repositories/register
         PQ-->>CH: 200 (upsert + audit log)
         CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
         GH-->>CH: head_sha atual
