@@ -87,7 +87,20 @@ resposta ao GitHub.
 Em ambos os diagramas abaixo, toda chamada captain-hook→pequod
 (`POST /internal/repositories/register`/`/unregister`) é **REST
 síncrono, autenticado via header `X-Service-Token`** — mecanismo único,
-não repetido seta a seta.
+não repetido seta a seta. Os dois fluxos (`ping` e `installation`) publicam
+exatamente os **mesmos dois tópicos Kafka** pro Security Baseline, na
+mesma ordem — `quality-gate.workflow.started.v1` e `jobs.orchestration`
+(nomes confirmados em `captain-hook/config/settings.py` e idênticos aos
+já documentados em `kafka-topics.md`).
+
+> **Atenção — não confundir nome do tópico com `event_type` do payload:**
+> `quality-gate.workflow.started.v1` (com hífen e sufixo `.v1`) é o nome
+> do **tópico Kafka** — é o que se usa pra assinar/configurar o consumer.
+> Dentro do **payload** dessa mensagem, o campo `event_type` carrega uma
+> string ligeiramente diferente: `quality_gate.workflow.started`
+> (underscore, sem `.v1`) — ver `wire/schemas/quality_gate_v1.py`. São
+> dois identificadores distintos que coincidem parcialmente; quem for
+> implementar não deve copiar um no lugar do outro.
 
 ### `ping`
 
@@ -136,7 +149,8 @@ sequenceDiagram
         alt action = created | added
             CH->>PQ: POST /internal/repositories/register
             CH->>GH: GET default_branch atual + HEAD sha
-            CH->>K: publish workflow.started + jobs.orchestration (baseline, scope=branch)
+            CH->>K: publish quality-gate.workflow.started.v1 (scope=branch)
+            CH->>K: publish jobs.orchestration (1 por scanner habilitado, baseline)
         else action = deleted | removed
             CH->>PQ: POST /internal/repositories/unregister
         end
