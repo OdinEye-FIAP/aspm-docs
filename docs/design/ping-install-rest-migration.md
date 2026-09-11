@@ -102,6 +102,18 @@ já documentados em `kafka-topics.md`).
 > dois identificadores distintos que coincidem parcialmente; quem for
 > implementar não deve copiar um no lugar do outro.
 
+> **Por que existe o `GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}`:**
+> `push_controller.py` monta o `BaselineContext` direto do payload do
+> webhook, porque `push` traz o `head_sha` pronto no campo `after`.
+> `ping`/`installation`/`installation_repositories` **não** têm esse
+> campo — não houve push nenhum, só registro/instalação. O nome da
+> default branch **já vem no payload** desses webhooks também
+> (`repository.default_branch`), sem precisar de API. O que falta é só o
+> `head_sha` — o commit que está na ponta dessa branch agora — e isso só
+> a API do GitHub dá: `GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}`
+> devolve o ref atual, de onde se extrai o sha. Sem esse `head_sha` não
+> dá pra montar o `BaselineContext`/`JobDescriptor` que o moby-dick espera.
+
 ### `ping`
 
 ```mermaid
@@ -148,7 +160,8 @@ sequenceDiagram
     loop por repositório (concorrência: ver "Pontos abertos")
         alt action = created | added
             CH->>PQ: POST /internal/repositories/register
-            CH->>GH: GET default_branch atual + HEAD sha
+            CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
+            GH-->>CH: head_sha atual
             CH->>K: publish quality-gate.workflow.started.v1 (scope=branch)
             CH->>K: publish jobs.orchestration (1 por scanner habilitado, baseline)
         else action = deleted | removed
@@ -208,7 +221,7 @@ rede (REST pequod, GET GitHub, publish Kafka) em `background_tasks`.
 | Arquivo | Mudança |
 |---|---|
 | `diplomat/http_out/github_read_client.py` (novo, ou método novo em `github_write_client.py` se fizer mais sentido reaproveitar o cliente existente) | Método pra buscar o HEAD sha atual de uma branch: `GET /repos/{owner}/{repo}/git/ref/heads/{branch}` (usa o mesmo installation token que `GitHubWriteClient` já minta pra `enrich_registrations_with_repository_details`/scaffold). |
-| `adapter/wire_in/install_baseline_adapter.py` (novo) | `to_baseline_context_from_registration(event: RepositoryRegisteredEvent, head_sha: str) -> BaselineContext` — monta o mesmo `BaselineContext` que `push_adapter.to_baseline_context` produz a partir de um push, só que a partir dos dados já disponíveis no evento de registro + do `head_sha` buscado via API. |
+| `adapter/wire_in/install_baseline_adapter.py` (novo) | `to_baseline_context_from_registration(event: RepositoryRegisteredEvent, head_sha: str) -> BaselineContext` — monta o mesmo `BaselineContext` que `push_adapter.to_baseline_context` produz a partir de um push, só que a partir dos dados já disponíveis no evento de registro (que já inclui `default_branch`, vindo do payload original do webhook) + do `head_sha` buscado via API. |
 | `controller/ping_controller.py` | Dentro do mesmo background task do registro (ver Fase A acima): depois do `register_repository`, se `registration_event.default_branch` estiver preenchido, busca o HEAD sha, monta `BaselineContext`, chama a mesma `_build_baseline_jobs`/`to_baseline_workflow_started_event` que `push_controller.py` usa (extrair essas duas funções pra um módulo compartilhado, ex. `controller/baseline_jobs.py`, pra não duplicar código entre `push_controller` e `ping_controller`/`installation_controller`), publica `workflow.started` + `jobs.orchestration`. |
 | `controller/installation_controller.py` | Idem, dentro do loop por repositório, só pra `action=created`/`added` (não pra `deleted`/`removed`, óbvio). |
 | `controller/push_controller.py` | Refatorado só pra importar `_build_baseline_jobs` do módulo compartilhado em vez de definir localmente — comportamento idêntico. |
