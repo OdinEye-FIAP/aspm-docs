@@ -85,6 +85,9 @@ resposta ao GitHub.
 - Não muda a lógica interna de `process_repository_scaffold`
   (`repo_scaffold_controller.py`) — a função já é agnóstica à origem do
   trigger (só recebe owner/repo), só passa a ser chamada de um lugar novo.
+- Não muda o comportamento de upsert + audit log do pequod no registro
+  (ver "Pontos abertos", item 5 — questionado se é necessário, mas não
+  decidido/removido nesta proposta).
 - Não implementa "listar PRs" nem o redesenho do `/live-info` — são ideias
   registradas separadamente em `decisions.md` (Open questions).
 - Não implementa tópicos Kafka por scanner — ideia registrada
@@ -116,7 +119,10 @@ já documentados em `kafka-topics.md`) — e, a partir desta proposta, os
 dois também disparam o mesmo auto-scaffold ao final. Os dois diagramas
 são agora **estruturalmente idênticos**: recebe webhook → responde `200`
 imediato — zero lógica síncrona no meio — → tudo (validação de payload
-incluída) roda dentro de `background_tasks`.
+incluída) roda dentro de `background_tasks`. O consumo do `jobs.orchestration`
+pelo moby-dick só acontece no branch de registro (`ping` com payload
+utilizável / `installation` com `action=created|added`) — nunca no
+branch de desregistro, que não publica esse tópico.
 
 > **Atenção — não confundir nome do tópico com `event_type` do payload:**
 > `quality-gate.workflow.started.v1` (com hífen e sufixo `.v1`) é o nome
@@ -152,6 +158,8 @@ incluída) roda dentro de `background_tasks`.
 > sempre em sincronia. É exatamente o mesmo comportamento de hoje (quando
 > isso ainda é disparado por consumer Kafka); a Fase A só troca o
 > mecanismo de invocação (Kafka consumer → handler REST), não a lógica.
+> Se o audit log for considerado desnecessário no futuro (ver "Pontos
+> abertos", item 5), essa resposta mudaria pra só `200 (upsert)`.
 >
 > **Achado à parte, fora do escopo desta proposta:** o texto do audit log
 > gravado hoje usa literalmente as strings `"application.registered_via_ping"`/
@@ -212,12 +220,12 @@ sequenceDiagram
             GH-->>CH: head_sha atual
             CH->>K: publish quality-gate.workflow.started.v1 (scope=branch)
             CH->>K: publish jobs.orchestration (1 por scanner habilitado, baseline)
+            K->>MD: consome jobs.orchestration (idêntico ao fluxo de push hoje)
             CH->>CH: auto-scaffold (novo aqui — reaproveita a mesma process_repository_scaffold do ping)
         else action = deleted | removed
             CH->>PQ: POST /internal/repositories/unregister
         end
     end
-    K->>MD: consome jobs.orchestration (idêntico ao fluxo de push hoje)
 ```
 
 Note que a chamada REST (registro) e a publicação Kafka (baseline) são
@@ -229,7 +237,12 @@ e mesmo essa não é rígida, porque `pequod/controller/quality_gate_controller.
 já tolera um `scanner.completed` chegando antes do `workflow.started`
 (cria um run "provisório"). O auto-scaffold não tem dependência de ordem
 com o registro/baseline — só precisa do owner/repo, poderia até rodar em
-paralelo, mas fica após por simplicidade (mesma ordem do `ping`).
+paralelo, mas fica após por simplicidade (mesma ordem do `ping`). O
+`K->>MD` fica dentro do branch de registro nos dois diagramas (não depois
+do `loop`/`alt` inteiro) porque é exatamente aonde a publicação acontece
+— o branch de desregistro nunca publica `jobs.orchestration`, e o
+consumo pelo moby-dick é contínuo/por mensagem, não um evento agregado
+que acontece uma vez depois do loop terminar.
 
 Com o ajuste de consistência, `ping` e `installation` agora seguem o
 **mesmo padrão de resposta, sem nenhuma diferença estrutural**: receber
@@ -246,7 +259,7 @@ scaffold — dentro de `background_tasks`.
 | `diplomat/http_in/service_auth.py` (novo) | `require_service_token(*allowed: str)` — dependency factory genérica. Lê os tokens conhecidos (`moby_dick_service_token`, `tars_service_token`, `captain_hook_service_token`) das settings, valida `X-Service-Token` contra os serviços listados em `allowed` com `hmac.compare_digest`. Se nenhum token esperado estiver configurado (dev local), não exige auth — mesmo comportamento do `require_moby_dick_service_token` atual. |
 | `diplomat/http_in/moby_dick_auth.py` | Removido — callers passam a usar `require_service_token("moby-dick")`. |
 | (arquivo equivalente do tars-ai, se existir um dedicado) | Idem — migra pra `require_service_token("tars-ai")`. |
-| `diplomat/http_in/repository_registration_sync_handler.py` (novo) | Dois handlers finos: `handle_register_repository(payload: dict) -> dict` e `handle_unregister_repository(payload: dict) -> dict`. Fazem `RepositoryRegisteredEvent.model_validate(payload)` / `RepositoryUnregisteredEvent.model_validate(payload)` e chamam direto `process_repository_registered`/`process_repository_unregistered` (`controller/repository_registration_controller.py` e `repository_unregistration_controller.py` — **zero mudança** nesses dois controllers, upsert idempotente + audit log na mesma transação continuam iguais). Retornam `{"status": "ok", "application_id": ...}`. |
+| `diplomat/http_in/repository_registration_sync_handler.py` (novo) | Dois handlers finos: `handle_register_repository(payload: dict) -> dict` e `handle_unregister_repository(payload: dict) -> dict`. Fazem `RepositoryRegisteredEvent.model_validate(payload)` / `RepositoryUnregisteredEvent.model_validate(payload)` e chamam direto `process_repository_registered`/`process_repository_unregistered` (`controller/repository_registration_controller.py` e `repository_unregistration_controller.py` — **zero mudança** nesses dois controllers, upsert idempotente + audit log na mesma transação continuam iguais — ver "Pontos abertos", item 5, pra revisão futura do audit log). Retornam `{"status": "ok", "application_id": ...}`. |
 | `diplomat/http_in/captain_hook_integration_router.py` (novo) | `APIRouter(prefix="/internal/repositories", dependencies=[Depends(require_service_token("captain-hook"))])`; rotas `POST /register` → `handle_register_repository`, `POST /unregister` → `handle_unregister_repository`. |
 | `config/settings.py` | + `captain_hook_service_token: str = ""`. Remove `topic_repository_registered`, `topic_repository_unregistered`, `topic_repository_registration_dlq`, `topic_repository_unregistration_dlq`, `kafka_repository_registration_consumer_group`, `kafka_repository_unregistration_consumer_group`. |
 | `diplomat/http_server.py` | Registra `captain_hook_integration_router`. Remove `RepositoryRegistrationConsumer`/`RepositoryUnregistrationConsumer` do `lifespan` (imports, criação, `start()`/`stop()`, `app.state.*`). |
@@ -303,6 +316,7 @@ Fase B pode ir no mesmo deploy do captain-hook do passo 2, ou em um deploy segui
 2. **Escopo da Fase B:** todo repositório instalado recebe Security Baseline imediato e PR de scaffold, sem exceção? Numa instalação em massa numa org grande, isso pode disparar dezenas/centenas de workflows de scan **e** dezenas/centenas de PRs de scaffold de uma vez (o scaffold já é protegido pela flag `ENABLE_REPO_SCAFFOLD_PR`, default `False` — baixo risco enquanto desligada; o Kafka + `SCANNER_MAX_CONCURRENCY` do moby-dick absorve o lado do baseline com backpressure natural). Vale confirmar se é o comportamento desejado ou se deveria ter algum controle adicional — ex. feature flag dedicada `ENABLE_BASELINE_ON_INSTALL` pro baseline, no estilo do `ENABLE_REPO_SCAFFOLD_PR` que o scaffold já tem. **Ainda sem decisão — recomendo um kill switch dedicado pro baseline, dado o precedente do próprio `ENABLE_REPO_SCAFFOLD_PR`.**
 3. **Nomes finais de settings/endpoints** listados acima são propostos, não fechados — ajustar durante a implementação se algo já existir com nome diferente.
 4. **Achado à parte, fora do escopo:** audit log de registro grava sempre `"application.registered_via_ping"`/`"application.updated_via_ping"` (`repository_registration_controller.py`), mesmo quando o trigger real foi `installation`/`installation_repositories` — já é assim hoje, antes desta proposta. Não corrigido aqui; vale registrar em `decisions.md` como fix separado.
+5. **Audit log de registro/desregistro pode ser desnecessário** (levantado 2026-09-11): questionado se vale a pena manter o `INSERT` na tabela de audit log dentro de `process_repository_registered`/`process_repository_unregistered`, já que é mais uma escrita síncrona na mesma transação do upsert (acopla disponibilidade do endpoint à disponibilidade da tabela de audit). **Sem decisão agora** — anotado pra reavaliar depois; se for removido, simplifica a Fase A (menos coisa pra `zero mudança` preservar) e o achado do item 4 acima deixa de fazer sentido (não haveria mais audit log pra ficar impreciso).
 
 ## Documentação a atualizar depois da implementação
 
@@ -310,5 +324,5 @@ Fase B pode ir no mesmo deploy do captain-hook do passo 2, ou em um deploy segui
 - `docs/reference/kafka-topics.md`: remove `repository.registered.v1`/`.unregistered.v1` e as DLQs correspondentes.
 - `docs/reference/http-endpoints.md`: adiciona `/internal/repositories/register`/`unregister` no pequod; atualiza a lista de "Side effects" do `POST /webhook` do captain-hook; documenta que `ping` agora também responde antes de processar (como `installation`); documenta que `installation`/`installation_repositories` agora também pode abrir PR de scaffold.
     - **Achado à parte, não relacionado a esta proposta:** esse mesmo arquivo hoje lista `github.events.raw` como side-effect "sempre" publicado pelo `/webhook` — esse tópico não existe no código (já corrigido em `architecture.md`/`kafka-topics.md`/`decisions.md`, mas este arquivo específico ficou de fora daquela correção). Vale um fix separado, pequeno, independente desta proposta.
-- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita; mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 4 de "Pontos abertos" acima).
+- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita; mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 4) e pra revisão da necessidade do audit log em si (item 5) de "Pontos abertos" acima.
 - `docs/overview/repos.md`: responsabilidades do captain-hook mencionam "publicar registro/baixa via Kafka" — atualizar pra REST.
