@@ -39,6 +39,62 @@ Eventos sem processamento dedicado são logados e descartados — não fazem o w
 !!! note "Push só dispara Security Baseline na default branch"
     `adapter/wire_in/push_adapter.py::to_baseline_context` filtra estritamente `refs/heads/{repository.default_branch}`, ignora `deleted=true` e commits vazios (`after` zerado). Push em feature branch, tag ou delete de branch não gera nenhum job — o webhook é recebido, mas `to_baseline_context` retorna `None` e `process_push_event` só loga "push ignorado". Confirmado em `main` desde 31/ago/2026 (PR #38) — ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10). Ver também [onboarding de repositório](integration/onboarding-repo.md).
 
+## Como `ping` e `installation(_repositories)` são processados (sequência)
+
+Esses eventos não geram `JobDescriptor`/scanner — só afetam o inventário de repositórios no pequod (`repository.registered.v1` / `repository.unregistered.v1`). Não havia ainda um diagrama sequencial pra esse fluxo (só a tabela acima); fica registrado aqui, ao lado dos diagramas de check_run.
+
+### `ping`
+
+```mermaid
+sequenceDiagram
+    participant GH as GitHub
+    participant CH as captain-hook
+    participant K as Kafka (repository.registered.v1)
+    participant PQ as pequod
+
+    GH->>CH: POST /webhook (ping)
+    CH->>CH: process_ping_event
+    alt payload utilizável (repo individual, com dados completos)
+        CH->>K: publish repository.registered.v1
+        K->>PQ: consome e registra o repositório
+        CH->>CH: background_tasks.add_task(process_repository_scaffold)
+        Note over CH: scaffold só é avaliado aqui —<br/>chamadas à API do GitHub (branch/commit/PR)<br/>rodam depois da resposta HTTP
+    else payload incompleto (sem repositório individual — ex.: ping de app/org)
+        Note over CH: nenhum evento publicado, nenhum scaffold
+    end
+    CH-->>GH: 200 OK
+```
+
+### `installation` / `installation_repositories`
+
+```mermaid
+sequenceDiagram
+    participant GH as GitHub
+    participant CH as captain-hook
+    participant K as Kafka (repository.*)
+    participant PQ as pequod
+
+    GH->>CH: POST /webhook (installation | installation_repositories)
+    CH-->>GH: 200 OK imediato
+    Note over CH: processamento agendado via background_tasks —<br/>publicar N repositórios pode passar<br/>do timeout curto do webhook (~10s)
+
+    CH->>CH: process_installation(_repositories)_event
+    alt action = created | added
+        loop 1 por repositório, sequencial, falha isolada
+            CH->>K: publish repository.registered.v1
+        end
+    else action = deleted | removed
+        loop 1 por repositório, sequencial, falha isolada
+            CH->>K: publish repository.unregistered.v1
+        end
+    end
+    K->>PQ: consome e registra/desregistra em massa
+    Note over CH: nunca dispara auto-scaffold —<br/>evitaria abrir dezenas de PRs simultâneos numa org grande
+```
+
+!!! note "Fonte"
+    `controller/webhook_controller.py` (roteamento), `controller/ping_controller.py`, `controller/installation_controller.py`. Confirmado em `main` em 2026-09-10.
+
 ## Scanners disparados
 
 Cada evento relevante (`pull_request` relevante ou `push` na default branch) monta uma lista de `JobDescriptor`, um por scanner habilitado, publicada em `jobs.orchestration`:
@@ -73,7 +129,7 @@ flowchart LR
 
   GH -->|pull_request opened/synchronize/reopened| CH
   GH -->|push na default branch| CH
-  GH -->|ping / installation(_repositories)| CH
+  GH -->|"ping / installation(_repositories)"| CH
   HD -->|GET live-info / POST scaffold-pr| CH
   CH -->|publish jobs.orchestration N scanners + quality-gate.workflow.started.v1| K
 ```
