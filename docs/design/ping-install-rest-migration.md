@@ -82,6 +82,11 @@ resposta ao GitHub.
 ## Não-objetivo
 
 - Não muda nada em `pull_request`/`push` (scope=`pr` continua igual).
+  `push_controller.py` continua sem tocar em registro/inventário (confirmado
+  em 2026-09-14 — nunca chamou `repository.registered.v1` nem qualquer
+  upsert; só monta `BaselineContext` e publica `workflow.started`/
+  `jobs.orchestration`, assumindo que o repo já está registrado, ou
+  contando com o self-heal do pequod — ver "Pontos abertos", item 6).
 - Não muda o moby-dick. Ele continua scanner-agnóstico e não sabe (nem
   precisa saber) se um `jobs.orchestration` veio de um `push` real ou de
   um `ping`/`installation` — pra ele é o mesmo `JobDescriptor` com
@@ -92,6 +97,9 @@ resposta ao GitHub.
 - Não muda o comportamento de upsert + audit log do pequod no registro
   (ver "Pontos abertos", item 4 — questionado se é necessário, mas não
   decidido/removido nesta proposta).
+- Não muda o self-heal mínimo de `applications` feito por
+  `finding_repo.py::_resolve_application_id` durante ingestão de
+  `findings.raw` (ver "Pontos abertos", item 6).
 - Não implementa "listar PRs" nem o redesenho do `/live-info` — são ideias
   registradas separadamente em `decisions.md` (Open questions).
 - Não implementa tópicos Kafka por scanner — ideia registrada
@@ -174,6 +182,27 @@ branch de desregistro, que não publica esse tópico.
 > histórico de auditoria já está impreciso pra repositórios registrados em
 > massa. Não corrigido aqui porque foge do escopo (REST + baseline); vale
 > um radar/fix separado em `decisions.md`.
+
+> **Achado à parte, confirmado em 2026-09-14 — registro "capenga" via
+> self-heal do finding:** o pequod tem uma rede de segurança pra não
+> travar a ingestão de `findings.raw` quando o repo nunca foi registrado:
+> `finding_repo.py::_resolve_application_id` faz um upsert mínimo em
+> `applications` (só `repository_provider`, `repository_external_id`,
+> `repository_full_name`, `name`, `repository_url` — marcado no metadata
+> como `"updated_from": "pequod_finding_dual_write"`), já que
+> `scans.application_id` é `NOT NULL` com FK. Isso significa que **um
+> `push` pode criar sozinho uma `application` capenga**, sem `owner_name`,
+> `default_branch`, `language`, `description`, `is_active` — campos que
+> só vêm do registro oficial (`process_repository_registered`, via
+> `ping`/`installation`). `push_controller.py` **nunca** chama registro
+> (confirmado — nenhuma referência a `register`/`registered`/`upsert` no
+> arquivo); ele só monta `BaselineContext` e publica pro Quality Gate,
+> assumindo (ou não se importando) que o registro já aconteceu antes. Se
+> um `push` chegar antes de qualquer `ping`/`installation` pro mesmo repo
+> (ex. app instalada mas evento de registro ainda não processado, ou
+> configuração manual de webhook sem instalar a App), o repo fica
+> "capenga" até um registro oficial chegar depois e sobrescrever. Ver
+> "Pontos abertos", item 6.
 
 ### `ping`
 
@@ -308,7 +337,8 @@ scaffold — dentro de `background_tasks`.
 ## Testes
 
 - pequod: unit test de `require_service_token` (aceita serviço certo, rejeita token errado, rejeita serviço não-listado em `allowed`, modo dev sem token configurado). Integration test do router novo: registro cria `application`; registro duplicado (mesmo `repository_id`) faz upsert, não duplica; unregister faz soft delete; 401 sem token.
-- captain-hook: unit test de `PequodClient` (retry em 5xx, propaga em 404, propaga depois de esgotar tentativas). Unit test de `ping_controller`/`installation_controller` com `PequodClient` mockado — cobre o caso de falha isolada não abortar o lote em `installation`, **e** o caso de `ping` responder `200` mesmo quando o background task falha (comportamento novo, precisa de teste dedicado). Fase B: teste de que `BaselineContext` sintético (via ping/install) gera o mesmo formato de `JobDescriptor` que o caminho de `push` gera pro mesmo repo/branch (só o `trigger`/`delivery_id` diferem). **Novo:** teste de que `installation_controller.py` chama `process_repository_scaffold` por repositório no loop de `created`/`added`, respeitando `ENABLE_REPO_SCAFFOLD_PR` e não duplicando PR se a branch de scaffold já existir (mesma checagem que `ping` já tem). **Novo:** teste de que `webhook_controller.py` agenda `process_ping_event` via `background_tasks.add_task` (não mais `await` direto) e responde `200` mesmo com payload de ping incompleto/inválido. **Novo:** teste de concorrência — com `INSTALLATION_MAX_CONCURRENCY=2` e um `installation` com 5 repositórios, confirmar que nunca mais que 2 coroutines rodam ao mesmo tempo (ex. via um mock que conta chamadas concorrentes ao `PequodClient`) e que uma falha isolada num repositório não impede os outros 4 de completar. |
+- captain-hook: unit test de `PequodClient` (retry em 5xx, propaga em 404, propaga depois de esgotar tentativas). Unit test de `ping_controller`/`installation_controller` com `PequodClient` mockado — cobre o caso de falha isolada não abortar o lote em `installation`, **e** o caso de `ping` responder `200` mesmo quando o background task falha (comportamento novo, precisa de teste dedicado). Fase B: teste de que `BaselineContext` sintético (via ping/install) gera o mesmo formato de `JobDescriptor` que o caminho de `push` gera pro mesmo repo/branch (só o `trigger`/`delivery_id` diferem). **Novo:** teste de que `installation_controller.py` chama `process_repository_scaffold` por repositório no loop de `created`/`added`, respeitando `ENABLE_REPO_SCAFFOLD_PR` e não duplicando PR se a branch de scaffold já existir (mesma checagem que `ping` já tem). **Novo:** teste de que `webhook_controller.py` agenda `process_ping_event` via `background_tasks.add_task` (não mais `await` direto) e responde `200` mesmo com payload de ping incompleto/inválido. **Novo:** teste de concorrência — com `INSTALLATION_MAX_CONCURRENCY=2` e um `installation` com 5 repositórios, confirmar que nunca mais que 2 coroutines rodam ao mesmo tempo (ex. via um mock que conta chamadas concorrentes ao `PequodClient`) e que uma falha isolada num repositório não impede os outros 4 de completar.
+- pequod: teste de regressão pro self-heal — confirmar que um `push` (via `findings.raw`) pra um repo nunca registrado ainda cria a `application` capenga (comportamento preservado, não quebrado por esta proposta) e que um registro oficial subsequente sobrescreve os campos corretamente.
 - Manual/staging: instalar a App num repo de teste (`aspm-vuln-lab` ou `clint-eastwood`) e confirmar: aplicação aparece no pequod imediatamente (sem esperar push), Security Baseline dispara e aparece Issue agregada no repo, `ping` de reconfiguração de webhook não duplica nada, `ping` responde `200` rapidamente mesmo com pequod/GitHub API lentos (validar com um delay artificial em staging). **Novo:** instalar a App numa org com vários repos de uma vez (`installation` created com `repositories` com N > 1) e confirmar que cada repo recebe PR de scaffold (com `ENABLE_REPO_SCAFFOLD_PR=true`), sem duplicar se rodar de novo, e que o tempo total cai em relação ao processamento sequencial.
 
 ## Ordem de deploy (dentro do cutover direto)
@@ -328,6 +358,7 @@ Fase B pode ir no mesmo deploy do captain-hook do passo 2, ou em um deploy segui
 3. **Achado à parte, fora do escopo:** audit log de registro grava sempre `"application.registered_via_ping"`/`"application.updated_via_ping"` (`repository_registration_controller.py`), mesmo quando o trigger real foi `installation`/`installation_repositories` — já é assim hoje, antes desta proposta. Não corrigido aqui; vale registrar em `decisions.md` como fix separado.
 4. **Audit log de registro/desregistro pode ser desnecessário** (levantado 2026-09-11): questionado se vale a pena manter o `INSERT` na tabela de audit log dentro de `process_repository_registered`/`process_repository_unregistered`, já que é mais uma escrita síncrona na mesma transação do upsert (acopla disponibilidade do endpoint à disponibilidade da tabela de audit). **Sem decisão agora** — anotado pra reavaliar depois; se for removido, simplifica a Fase A (menos coisa pra `zero mudança` preservar) e o achado do item 3 acima deixa de fazer sentido (não haveria mais audit log pra ficar impreciso).
 5. **Paralelização e falhas concorrentes:** com N repositórios processando ao mesmo tempo (até `INSTALLATION_MAX_CONCURRENCY`), se vários falharem simultaneamente (ex. pequod fora do ar), os logs de erro também saem concorrentes — vale confirmar que o logging estruturado consegue distinguir qual repositório falhou em qual etapa sem se confundir (correlation id por repositório/coroutine). Não deveria exigir mudança de design, só checar na implementação.
+6. **Registro "capenga" via self-heal do finding pode persistir indefinidamente** (levantado 2026-09-14): se um `push` chegar pra um repo antes de qualquer `ping`/`installation` ser processado pra ele (ex. corrida entre o registro em background e um push muito rápido logo após a instalação, ou um webhook configurado manualmente sem passar pelo fluxo de instalação da App), o pequod cria uma `application` capenga via `finding_repo.py::_resolve_application_id` (só campos básicos, sem `owner_name`/`default_branch`/`language`/`is_active`). Essa proposta **não** cria nenhum mecanismo pra detectar/corrigir isso proativamente — depende de um registro oficial chegar depois e sobrescrever. Possíveis ajustes futuros, sem decisão tomada: (a) um job de reconciliação periódico que lista `applications` com `metadata.updated_from = "pequod_finding_dual_write"` e tenta re-registrar via GitHub API; (b) um alerta/métrica quando isso acontece; (c) captain-hook, ao processar `push`, checar/garantir registro também (mudaria o "não-objetivo" desta proposta). Fica anotado pra discussão futura, fora do escopo desta proposta.
 
 ## Documentação a atualizar depois da implementação
 
@@ -335,5 +366,5 @@ Fase B pode ir no mesmo deploy do captain-hook do passo 2, ou em um deploy segui
 - `docs/reference/kafka-topics.md`: remove `repository.registered.v1`/`.unregistered.v1` e as DLQs correspondentes.
 - `docs/reference/http-endpoints.md`: adiciona `/internal/repositories/register`/`unregister` no pequod; atualiza a lista de "Side effects" do `POST /webhook` do captain-hook; documenta que `ping` agora também responde antes de processar (como `installation`); documenta que `installation`/`installation_repositories` agora também pode abrir PR de scaffold e processa repositórios em paralelo.
     - **Achado à parte, não relacionado a esta proposta:** esse mesmo arquivo hoje lista `github.events.raw` como side-effect "sempre" publicado pelo `/webhook` — esse tópico não existe no código (já corrigido em `architecture.md`/`kafka-topics.md`/`decisions.md`, mas este arquivo específico ficou de fora daquela correção). Vale um fix separado, pequeno, independente desta proposta.
-- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita (incluindo a paralelização); mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 3) e pra revisão da necessidade do audit log em si (item 4) de "Pontos abertos" acima.
+- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita (incluindo a paralelização); mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 3), pra revisão da necessidade do audit log em si (item 4), e pro registro capenga via self-heal (item 6) de "Pontos abertos" acima.
 - `docs/overview/repos.md`: responsabilidades do captain-hook mencionam "publicar registro/baixa via Kafka" — atualizar pra REST; mencionar processamento paralelo de `installation`.
