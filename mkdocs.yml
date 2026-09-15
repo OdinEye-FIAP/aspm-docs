@@ -95,6 +95,7 @@ nav:
       - ishmael — Asset Inventory: design/ishmael.md
       - Revisão do schema (Pequod): design/schema-review.md
       - Backlog de melhorias e débitos técnicos: design/backlog.md
+      - "Proposta: registro via REST + Security Baseline em ping/install": design/ping-install-rest-migration.md
   - Projetos:
       - Pequod: pequod.md
       - Moby-dick: moby-dick.md
