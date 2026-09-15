@@ -112,15 +112,15 @@ sequenceDiagram
     participant PQ as pequod (ingest_controller)
     participant DB as Postgres (pequod)
 
-    K->>PQ: findings.raw (scan concluído)
-    PQ->>DB: persist_ingestion (findings/occurrences/identifiers/scan)
-    PQ->>PQ: clusterize_candidate_findings (determinístico, sem IA)
-    alt mesmo alvo técnico já tem consolidated_risk (mesmo pacote+manifest, ou mesmo arquivo+categoria)
-        PQ->>DB: auto-attach ao risco existente (severidade atualizada se necessário)
+    K->>PQ: findings.raw (scan concluido)
+    PQ->>DB: persist_ingestion (findings, occurrences, identifiers, scan)
+    PQ->>PQ: clusterize_candidate_findings (deterministico, sem IA)
+    alt mesmo alvo tecnico ja tem consolidated_risk (mesmo pacote+manifest, ou mesmo arquivo+categoria)
+        PQ->>DB: auto-attach ao risco existente (severidade atualizada se necessario)
     else candidate novo, sem risco correspondente
-        PQ->>DB: candidate_cluster fica pendente — é o que aparece em GET /semantic-candidates
+        PQ->>DB: candidate_cluster fica pendente - e o que aparece em GET /semantic-candidates
     end
-    PQ->>PQ: process_scan_persisted_for_quality_gate (fecha o gate — não relacionado ao TARS)
+    PQ->>PQ: process_scan_persisted_for_quality_gate (fecha o gate - nao relacionado ao TARS)
 ```
 
 A regra de auto-attach (`candidate_clustering_controller.py::_auto_attach_to_existing_risk`) agrupa por alvo técnico — mesmo pacote+manifest pra dependências, ou mesmo arquivo+categoria pra código — sem depender de decisão de IA. Isso significa que **múltiplas CVEs do mesmo pacote, ou múltiplas ocorrências da mesma regra no mesmo arquivo, nunca chegam ao TARS como candidates separados**: já saem do pequod anexadas ao mesmo `consolidated_risk`. O TARS só vê o que é genuinamente novo e ambíguo o suficiente pra precisar de uma decisão semântica (merge/keep/split entre candidates de categorias/alvos diferentes).
@@ -133,35 +133,35 @@ A regra de auto-attach (`candidate_clustering_controller.py::_auto_attach_to_exi
 sequenceDiagram
     participant AW as TarsAutoAnalyzer (loop)
     participant PIS as PequodIntegrationService
-    participant PQ as pequod (/integrations/tars/*)
+    participant PQ as pequod (integrations/tars)
     participant AI as AI Provider (Gemini)
 
     loop a cada TARS_AUTO_ANALYZE_INTERVAL_SECONDS
         AW->>PIS: run_cycle(findings_limit, clusters_limit)
 
         rect rgb(240,240,240)
-        Note over PIS: 1) findings/clusters pendentes
+        Note over PIS: 1 - findings e clusters pendentes
         PIS->>PQ: GET /pending-findings (X-Service-Token)
         PQ-->>PIS: findings sem finding_ai_analysis (ordenados por severidade)
         loop por finding
             PIS->>AI: analyze_finding(finding)
-            AI-->>PIS: recommendation/priority/confidence
+            AI-->>PIS: recommendation, priority, confidence
             PIS->>PQ: POST /finding-analyses
-            PQ-->>PIS: 201 (upsert + audit log, mesma transação)
+            PQ-->>PIS: 201 (upsert + audit log, mesma transacao)
         end
-        Note over PIS: falha isolada por finding vai pro "failed", não aborta o lote
+        Note over PIS: falha isolada por finding vai pro failed, nao aborta o lote
         end
 
         rect rgb(240,240,240)
-        Note over PIS: 2) clustering semântico
+        Note over PIS: 2 - clustering semantico
         PIS->>PQ: GET /semantic-candidates
         PQ-->>PIS: candidates ainda sem consolidated_risk (com members)
         alt existem candidates
             PIS->>AI: propose_semantic_clustering(candidates)
-            AI-->>PIS: risks[] (merge/keep/split)
-            Note over PIS: normalize_semantic_output — valida partição exata dos findings,<br/>remove candidates conflitantes, fallback "keep" p/ não-cobertos
+            AI-->>PIS: risks (merge, keep ou split)
+            Note over PIS: normalize_semantic_output valida particao exata dos findings, remove conflitos, fallback keep pros nao cobertos
             PIS->>PQ: POST /semantic-clustering-decisions
-            PQ-->>PIS: 201 (consolidated_risk + links + audit log; idempotente por proposal_id)
+            PQ-->>PIS: 201, consolidated_risk criado (links + audit log, idempotente por proposal_id)
         else nenhum candidate pendente
             Note over PIS: retorna sem chamar a IA
         end
