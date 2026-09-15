@@ -8,7 +8,7 @@ Serviço de triagem por IA e clustering semântico do ecossistema ASPM-AI. Enriq
     - **Legado** (padrão, `false`) — acesso direto ao PostgreSQL do pequod (`database.db`), rotas `/ai/*`.
     - **REST contra o pequod** (`true`) — nenhum acesso direto ao banco; consome as filas de trabalho e submete vereditos via `/integrations/tars/*` do pequod, rotas `/integrations/pequod/*`.
 
-    Ambos os modos coexistem no mesmo binário (`main.py` inclui os dois routers); o `TarsAutoAnalyzer` escolhe o ciclo automático de acordo com a flag.
+    Ambos os modos coexistem no mesmo binário (`main.py` inclui os dois routers); o `TarsAutoAnalyzer` escolhe o ciclo automático de acordo com a flag. Os diagramas abaixo descrevem o **modo REST** — é o modo com integração real ao resto do ecossistema; o legado é lido direto do banco e não tem chamada entre serviços pra diagramar.
 
 ## Visão rápida
 
@@ -59,6 +59,8 @@ Configurado por `AI_PROVIDER` (`config/settings.py`). Provider padrão do códig
 | `POST` | `/integrations/pequod/analyze-clusters` | busca `pending-clusters` no pequod, analisa e submete via `cluster-analyses` |
 | `POST` | `/integrations/pequod/run` | ciclo completo: findings pendentes + clustering semântico (`semantic-candidates` → proposta `merge`/`keep`/`split` → `semantic-clustering-decisions`) — 409 se `TARS_PEQUOD_INTEGRATION_ENABLED=false` |
 
+Do lado do pequod, todas essas rotas vivem em `/api/v1/integrations/tars/*` (`diplomat/http_in/tars_integration_router.py`), autenticadas por `X-Service-Token` (`tars_auth.py::require_tars_service_token` — mesmo padrão de auth por header usado no restante do ecossistema; sem token configurado, dev local segue sem exigir auth).
+
 ## Contrato de análise
 
 Individual finding (`finding_ai_analysis`, "slim"):
@@ -95,6 +97,85 @@ No modo REST, a consolidação semântica (`semantic_cluster_pending_candidates`
 
 - **Modo REST** (`TARS_PEQUOD_INTEGRATION_ENABLED=true`): chama `PequodIntegrationService.run_cycle()` a cada `TARS_AUTO_ANALYZE_INTERVAL_SECONDS`.
 - **Modo legado**: clusteriza pendências e analisa clusters pendentes (`ClusterService` + `analyze_pending_clusters`).
+
+## Fluxo de ponta a ponta (diagramas)
+
+Os findings/clusters que o TARS analisa não nascem para ele — o pequod já faz um primeiro passe **determinístico, sem IA**, no momento da ingestão (`findings.raw`). Só o que sobra desse passo (candidates sem risco correspondente ainda) é que fica disponível pro TARS decidir semanticamente. Os dois diagramas abaixo mostram essa cadeia completa.
+
+### 1. Antes do TARS — candidate clustering determinístico (pequod)
+
+Disparado pelo próprio `ingest_controller.py::process_findings_raw`, logo após persistir o scan. Roda pra **todo** finding ingerido, TARS habilitado ou não.
+
+```mermaid
+sequenceDiagram
+    participant K as Kafka (findings.raw)
+    participant PQ as pequod (ingest_controller)
+    participant DB as Postgres (pequod)
+
+    K->>PQ: findings.raw (scan concluído)
+    PQ->>DB: persist_ingestion (findings/occurrences/identifiers/scan)
+    PQ->>PQ: clusterize_candidate_findings (determinístico, sem IA)
+    alt mesmo alvo técnico já tem consolidated_risk (mesmo pacote+manifest, ou mesmo arquivo+categoria)
+        PQ->>DB: auto-attach ao risco existente (severidade atualizada se necessário)
+    else candidate novo, sem risco correspondente
+        PQ->>DB: candidate_cluster fica pendente — é o que aparece em GET /semantic-candidates
+    end
+    PQ->>PQ: process_scan_persisted_for_quality_gate (fecha o gate — não relacionado ao TARS)
+```
+
+A regra de auto-attach (`candidate_clustering_controller.py::_auto_attach_to_existing_risk`) agrupa por alvo técnico — mesmo pacote+manifest pra dependências, ou mesmo arquivo+categoria pra código — sem depender de decisão de IA. Isso significa que **múltiplas CVEs do mesmo pacote, ou múltiplas ocorrências da mesma regra no mesmo arquivo, nunca chegam ao TARS como candidates separados**: já saem do pequod anexadas ao mesmo `consolidated_risk`. O TARS só vê o que é genuinamente novo e ambíguo o suficiente pra precisar de uma decisão semântica (merge/keep/split entre candidates de categorias/alvos diferentes).
+
+### 2. Ciclo automático do TARS (modo REST)
+
+`TarsAutoAnalyzer` roda esse ciclo a cada `TARS_AUTO_ANALYZE_INTERVAL_SECONDS`, com `TARS_PEQUOD_INTEGRATION_ENABLED=true`. São dois sub-fluxos independentes dentro do mesmo `run_cycle`.
+
+```mermaid
+sequenceDiagram
+    participant AW as TarsAutoAnalyzer (loop)
+    participant PIS as PequodIntegrationService
+    participant PQ as pequod (/integrations/tars/*)
+    participant AI as AI Provider (Gemini)
+
+    loop a cada TARS_AUTO_ANALYZE_INTERVAL_SECONDS
+        AW->>PIS: run_cycle(findings_limit, clusters_limit)
+
+        rect rgb(240,240,240)
+        Note over PIS: 1) findings/clusters pendentes
+        PIS->>PQ: GET /pending-findings (X-Service-Token)
+        PQ-->>PIS: findings sem finding_ai_analysis (ordenados por severidade)
+        loop por finding
+            PIS->>AI: analyze_finding(finding)
+            AI-->>PIS: recommendation/priority/confidence
+            PIS->>PQ: POST /finding-analyses
+            PQ-->>PIS: 201 (upsert + audit log, mesma transação)
+        end
+        Note over PIS: falha isolada por finding vai pro "failed", não aborta o lote
+        end
+
+        rect rgb(240,240,240)
+        Note over PIS: 2) clustering semântico
+        PIS->>PQ: GET /semantic-candidates
+        PQ-->>PIS: candidates ainda sem consolidated_risk (com members)
+        alt existem candidates
+            PIS->>AI: propose_semantic_clustering(candidates)
+            AI-->>PIS: risks[] (merge/keep/split)
+            Note over PIS: normalize_semantic_output — valida partição exata dos findings,<br/>remove candidates conflitantes, fallback "keep" p/ não-cobertos
+            PIS->>PQ: POST /semantic-clustering-decisions
+            PQ-->>PIS: 201 (consolidated_risk + links + audit log; idempotente por proposal_id)
+        else nenhum candidate pendente
+            Note over PIS: retorna sem chamar a IA
+        end
+        end
+    end
+```
+
+Pontos que vale destacar de quem for mexer nesse fluxo:
+
+- Os dois sub-fluxos (findings/clusters individuais e clustering semântico) são independentes — uma falha em um não afeta o outro dentro do mesmo `run_cycle`.
+- Falha por finding individual (passo 1) é isolada e reportada em `failed`, sem abortar o restante do lote — mesmo padrão de isolamento por item usado em outras integrações do ecossistema (ver `docs/design/ping-install-rest-migration.md`).
+- O envio da proposta semântica (passo 2) é idempotente: se o mesmo `proposal_id` já foi aplicado, o pequod devolve o resultado existente (`status="replay"`) em vez de duplicar `consolidated_risk`.
+- `normalize_semantic_output` (`service/pequod_integration_service.py`) é uma camada de validação **no lado do TARS**, antes de mandar pro pequod: garante que cada candidate participe de no máximo um risco (exceto em `split`, que precisa particionar os findings sem sobreposição), e qualquer candidate que a IA não cobriu de forma válida cai em `keep` seguro — preserva a evidência em vez de arriscar um merge indevido.
+- `consolidated_risk` gerado aqui (por auto-attach ou por decisão do TARS) é o que o heimdall-dashboard e as demais consultas de risco do pequod (`consolidated_risk_controller.py`) expõem — é o dado final de "risco consolidado" do ecossistema.
 
 ## Links
 
