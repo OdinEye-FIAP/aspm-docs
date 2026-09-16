@@ -26,6 +26,76 @@ python3 main.py
 !!! note "Confirmado em `main` (reconfirmado 2026-09-10)"
     `baseline_sink_controller.py` e os campos `scope`/`branch_name` em `wire/schemas/quality_gate_v1.py` estão em `main` desde 31/ago/2026 (PR #38), junto com o rollout equivalente em captain-hook e pequod. Ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico completo (inclui uma verificação que, mais tarde na mesma data, concluiu erroneamente o contrário a partir de refs git locais desatualizadas — já corrigida).
 
+## Execução de um job (`JobConsumer` → scanner → resultado)
+
+Do consumo da mensagem em `jobs.orchestration` até o check individual atualizado no GitHub, passando por assinatura HMAC, DLQ, concorrência limitada e idempotência de execução — nenhuma dessas peças aparecia neste doc antes, embora já estivessem implementadas e documentadas no `README.md` do próprio moby-dick:
+
+```mermaid
+sequenceDiagram
+    participant K as Kafka (jobs.orchestration)
+    participant JC as JobConsumer
+    participant DLQ as Kafka (jobs.orchestration.dlq)
+    participant PJ as process_job (job_controller)
+    participant GH as GitHub API
+    participant D as Docker
+    participant K2 as Kafka (findings.raw /<br/>scanner.completed.v1)
+    participant PQ as Pequod (HTTP síncrono)
+
+    K->>JC: mensagem (job_id, image, command, env, callback)
+    JC->>JC: decode_json_value + verify_signed_message<br/>(HMAC x-odineye-signature-v1, timestamp anti-replay,<br/>producer esperado = captain-hook)
+
+    alt assinatura ou schema inválidos
+        JC->>DLQ: publish_dlq(error_kind=message_rejected)
+        Note over JC: offset commitado — mensagem já foi<br/>tratada (rejeitada), não fica "presa"
+    else mensagem válida
+        JC->>JC: adquire semaphore<br/>(até SCANNER_MAX_CONCURRENCY jobs em paralelo,<br/>mesmo com 1 partição só)
+        JC->>PJ: handler(job) — em task própria
+
+        PJ->>PJ: lock asyncio por job_id +<br/>checa cache de jobs já completados (replay local?)
+
+        alt job_id já materializado nesta instância
+            PJ-->>JC: retorna sem reprocessar
+        else
+            PJ->>GH: find_or_create_check (external_id=job_id)
+            alt check individual já "completed"
+                PJ-->>JC: retorna (replay ignorado)
+            else
+                PJ->>GH: get_installation_token (GitHub App)
+                PJ->>D: run(image, command, env+GIT_TOKEN, volumes?)
+                D-->>PJ: exit_code, logs, SARIF<br/>(arquivo via get_archive; se ausente,<br/>fallback por markers no stdout)
+                PJ->>K2: publish findings.raw<br/>(retry local — nunca rereoda o container)
+                opt job pertence a um Quality Gate
+                    PJ->>K2: publish quality-gate.scanner.completed.v1
+                end
+                PJ->>GH: update_check_run (check individual, completed)
+                opt job pertence a um Quality Gate
+                    PJ->>PQ: POST /internal/quality-gates/{workflow_id}/evaluate
+                    alt ready=true
+                        PQ-->>PJ: QualityGateEvaluatedEvent
+                        PJ->>GH: update_check_run (check consolidado)<br/>+ upsert Issue de baseline se scope=branch
+                    else ready=false ou Pequod indisponível/5xx
+                        Note over PJ: nada a fazer agora — próximo scanner que<br/>terminar tenta de novo, ou o consumer de<br/>quality-gate.evaluated.v1 (fallback) cobre
+                    end
+                end
+                PJ->>PJ: marca job_id como completado<br/>(cache local, limite 4096)
+            end
+        end
+
+        alt handler propagou exceção não tratada
+            JC->>DLQ: publish_dlq(error_kind=handler_failed)
+        end
+
+        PJ-->>JC: retorna
+        JC->>JC: libera semaphore
+        JC->>K: commit offset — só quando todos os offsets<br/>anteriores da mesma partição também terminaram
+    end
+```
+
+Dois detalhes que não aparecem no diagrama mas mudam o comportamento em produção:
+
+- **Assinatura HMAC** é obrigatória por padrão (`KAFKA_REQUIRE_SIGNATURE=true`); sem `KAFKA_MESSAGE_SECRET` configurado igual nos dois lados (captain-hook produzindo, moby-dick consumindo), toda mensagem cai em DLQ por `message_rejected`.
+- **Idempotência tem duas camadas**: o lock/cache de `job_id` evita reprocessar dentro da mesma instância (redelivery do Kafka), e o `external_id=job_id` no check run do GitHub evita duplicar checks mesmo que uma segunda instância do moby-dick processe a mesma mensagem.
+
 ## Subsistema de Quality Gate
 
 Diferente do desenho original (aguardar `quality-gate.evaluated.v1` via Kafka de ponta a ponta), hoje o Moby Dick chama o **pequod diretamente por HTTP** depois de publicar cada `quality-gate.scanner.completed.v1`, evitando ficar preso esperando um evento que pode se perder em caso de instabilidade do broker:
