@@ -1,6 +1,6 @@
 # Tópicos Kafka
 
-Referência completa dos tópicos usados no pipeline. Nomes confirmados em `config/settings.py` de captain-hook, moby-dick e pequod (2026-09-10).
+Referência completa dos tópicos usados no pipeline. Nomes confirmados em `config/settings.py` de captain-hook, moby-dick e pequod (2026-09-16).
 
 ## Cluster
 
@@ -27,23 +27,14 @@ Stack atual: **Redpanda** (Kafka-compatible), single-node, sem replicação. Rod
 !!! warning "Não é mais 1 mensagem por PR"
     Um único evento de PR (ou push na default branch, Security Baseline) gera **uma mensagem por scanner habilitado** (Sonar sempre + Semgrep/Trivy/ZAP condicionados a `ENABLE_SEMGREP_SCAN`/`ENABLE_TRIVY_SCAN`/`ENABLE_ZAP_SCAN`). moby-dick roda até `SCANNER_MAX_CONCURRENCY=4` desses jobs em paralelo.
 
-### `repository.registered.v1`
-
-**Producer:** captain-hook · **Consumer:** pequod · **Key:** `repo_full_name`
-
-**Propósito:** registra um repositório no pequod quando o evento `installation`/`installation_repositories`/`ping` indica que ele passou a fazer parte do onboarding.
-
-### `repository.unregistered.v1`
-
-**Producer:** captain-hook · **Consumer:** pequod · **Key:** `repo_full_name`
-
-**Propósito:** baixa de repositório (ex: app desinstalado, repo removido da installation).
-
 ### `quality-gate.workflow.started.v1`
 
 **Producer:** captain-hook · **Consumer:** moby-dick · **Key:** `repo_full_name`
 
-**Propósito:** sinaliza o início de um workflow de quality gate — tanto para um PR (`scope=pr`) quanto para um push na default branch (`scope=branch`, Security Baseline).
+**Propósito:** sinaliza o início de um workflow de quality gate — tanto para um PR (`scope=pr`) quanto para um push na default branch (`scope=branch`, Security Baseline), quanto para o registro imediato de repositório via `ping`/`installation`/`installation_repositories` (mesmo `scope=branch`, ver nota abaixo).
+
+!!! note "`scope=branch` também disparado por `ping`/`installation` (desde PR #44, 15/set/2026)"
+    Além do push na default branch, captain-hook agora também publica este evento (e o `jobs.orchestration` correspondente) a partir de `controller/repository_onboarding.py::onboard_repository`, chamada por `ping_controller.py` (1x por webhook) e `installation_controller.py` (Nx em paralelo, um por repositório). Detalhes completos (incluindo o que isso substituiu) em [captain-hook.md](../captain-hook.md#como-ping-e-installation_repositories-são-processados-sequência).
 
 !!! note "`scope=branch` confirmado em produção (reconfirmado 2026-09-10)"
     captain-hook publica este evento com `scope=branch` a partir de `controller/push_controller.py` sempre que há push na default branch do repositório (filtro estrito em `adapter/wire_in/push_adapter.py::to_baseline_context`). moby-dick e pequod processam os dois escopos de ponta a ponta desde 31/ago/2026. Ver [Decisão §15](../overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10).
@@ -87,8 +78,6 @@ Mais numerosas do que uma primeira leitura da arquitetura sugere — confirmadas
 | `quality-gate.moby-dick.dlq` | moby-dick | consumo de `quality-gate.workflow.started.v1`/`quality-gate.evaluated.v1` |
 | `findings.raw.dlq` | pequod | consumo de `findings.raw` |
 | `quality-gate.pequod.dlq` | pequod | consumo de `quality-gate.scanner.completed.v1` |
-| `repository.registration.pequod.dlq` | pequod | consumo de `repository.registered.v1` |
-| `repository.unregistration.pequod.dlq` | pequod | consumo de `repository.unregistered.v1` |
 
 ## O que NÃO existe como tópico Kafka (nunca existiu, ou foi só planejado)
 
@@ -96,16 +85,17 @@ Mais numerosas do que uma primeira leitura da arquitetura sugere — confirmadas
 - **`findings.created`, `ai.enrichments.triage`, `ai.enrichments.reachability`, `scans.completed`** — previstos numa versão anterior desta página como tópicos futuros. Nunca foram criados — o enriquecimento por IA foi resolvido de outra forma (ver seção abaixo).
 - **Notificação de findings críticos:** ainda não existe canal de entrega externo (Slack/email); o modelo `alerts` já existe no pequod, falta o `notifier`.
 
-## Pivô pra REST (enriquecimento por IA)
+## Pivô pra REST (enriquecimento por IA e registro de repositório)
 
 - **Triagem/clustering por IA:** `tars-ai` faz *polling* REST contra o pequod (`/integrations/tars/pending-findings`, `/pending-clusters`, `/semantic-candidates`) e submete vereditos via REST (`/finding-analyses`, `/cluster-analyses`, `/semantic-clustering-decisions`) — sem tópico Kafka dedicado. Ver [Decisão §17](../overview/decisions.md#17-tars-ai-consome-o-pequod-via-rest-polling-não-via-tópico-kafka-dedicado--nova).
+- **Registro/desregistro de repositório:** captain-hook chama REST síncrono no pequod (`POST /internal/repositories/register`/`/unregister`), não Kafka — ver [captain-hook.md](../captain-hook.md).
 - **Métricas de scan (`scans.completed`):** não existe como tópico; moby-dick e pequod expõem cada um seu próprio `GET /metrics/quality-gate` (não formato Prometheus).
 
 ## Convenções de naming
 
 | Padrão | Uso |
 |---|---|
-| `<domain>.<event>.<state>.v<versão>` | `quality-gate.workflow.started.v1`, `repository.registered.v1` |
+| `<domain>.<event>.<state>.v<versão>` | `quality-gate.workflow.started.v1` |
 | Plural pro domain quando o domínio é uma coleção | `findings.*`, `jobs.*` |
 | Versão no nome do tópico (não só no schema) | `.v1` sufixo — diferente da convenção antiga descrita aqui (que previa versão só no `schema_version` do payload) |
 | `<topic>.dlq` ou `<domain>.<serviço>.dlq` | dead-letter queue — nomenclatura não é 100% uniforme entre serviços (ex: `jobs.orchestration.dlq` vs `quality-gate.pequod.dlq`) |
@@ -116,7 +106,6 @@ Mais numerosas do que uma primeira leitura da arquitetura sugere — confirmadas
 |---|---|---|
 | `jobs.orchestration` | `repo_full_name` | ordem por repo |
 | `findings.raw` | `repo_id` (`gh_<id>`) | ordem por repo, key estável a rename |
-| `repository.registered.v1` / `.unregistered.v1` | `repo_full_name` | ordem por repo |
 | `quality-gate.*` | `repo_full_name` | ordem por repo/workflow |
 
 ## Replay / reprocessamento

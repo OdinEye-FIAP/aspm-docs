@@ -22,7 +22,7 @@
 - Receber webhooks do GitHub (`POST /webhook`) e validar HMAC (`GITHUB_WEBHOOK_SECRET`)
 - Traduzir `pull_request.{opened,synchronize,reopened}` em `JobDescriptor v1` — um job por scanner habilitado (Sonar sempre + Semgrep/Trivy/ZAP via flag)
 - Traduzir `push` na default branch em Security Baseline (`scope=branch`) — mesma matriz de scanners, full-branch scan (`controller/push_controller.py` + `adapter/wire_in/push_adapter.py`)
-- Publicar registro/baixa de repositório (`repository.registered.v1`/`repository.unregistered.v1`) a partir dos eventos `installation`/`installation_repositories`
+- Registrar/desregistrar repositório no pequod via REST síncrono (`POST /internal/repositories/register`/`/unregister`) a partir de `ping`/`installation`/`installation_repositories`; para registro, também dispara Security Baseline imediato + auto-scaffold opcional pela mesma pipeline (`onboard_repository`), processando `installation` em paralelo
 - Expor `GET /repos/{owner}/{repo}/live-info` (issues/dependências ao vivo) e `POST /repos/{owner}/{repo}/scaffold-pr` (abre PR de onboarding sob demanda)
 - Auto-scaffold de PR (`ENABLE_REPO_SCAFFOLD_PR`) quando um repositório é registrado e não tem os arquivos esperados
 

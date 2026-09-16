@@ -147,9 +147,7 @@ Tudo no mesmo bridge user-defined (`aspm-net`).
 
 | Tópico | Producer | Consumer | Propósito |
 |---|---|---|---|
-| `jobs.orchestration` | captain-hook | moby-dick | [`JobDescriptor v1`](../reference/job-descriptor.md), 1 msg por scanner habilitado — tanto para PR (`scope=pr`) quanto para push na default branch (`scope=branch`) |
-| `repository.registered.v1` | captain-hook | pequod | registro de repositório (evento `installation`/ping) |
-| `repository.unregistered.v1` | captain-hook | pequod | baixa de repositório |
+| `jobs.orchestration` | captain-hook | moby-dick | [`JobDescriptor v1`](../reference/job-descriptor.md), 1 msg por scanner habilitado — tanto para PR (`scope=pr`) quanto para push na default branch ou registro via `ping`/`installation` (`scope=branch`) |
 | `quality-gate.workflow.started.v1` | captain-hook | moby-dick | início de um workflow de quality gate (PR ou Security Baseline) |
 | `findings.raw` | moby-dick | pequod | SARIF normalizado pós-scan |
 | `quality-gate.scanner.completed.v1` | moby-dick | pequod | fallback assíncrono por scanner concluído |
@@ -157,6 +155,9 @@ Tudo no mesmo bridge user-defined (`aspm-net`).
 
 !!! note "Correção 2026-09-10"
     Uma versão anterior desta tabela listava um tópico `github.events.raw` (payload bruto do webhook, "audit only"). Esse tópico **não existe no código** — não há string, setting nem publish em nenhum dos 5 serviços. Era uma invenção que se propagou pela documentação sem verificação contra o código real. Removido.
+
+!!! note "Correção 2026-09-16"
+    Esta tabela listava `repository.registered.v1`/`repository.unregistered.v1` (captain-hook → pequod). Esses tópicos foram removidos do código (PR #44 do captain-hook, mergeado 2026-09-15): registro/desregistro de repositório é hoje `POST /internal/repositories/register`/`/unregister`, REST síncrono, sem Kafka. Ver [captain-hook.md](../captain-hook.md).
 
 Para a lista completa de tópicos e as dead-letter queues (bem mais numerosas do que esta tabela resumida sugere), ver [referência completa de tópicos](../reference/kafka-topics.md).
 

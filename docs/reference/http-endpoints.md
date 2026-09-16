@@ -23,17 +23,18 @@ Catálogo dos endpoints expostos por cada serviço. Onde aplicável, link pro Sw
 
 | Status | Quando |
 |---|---|
-| `202 Accepted` | Webhook aceito, publicado em Kafka |
+| `202 Accepted` | Webhook aceito (mesmo status pra todo event_type — processamento real acontece depois, em `background_tasks` pra `ping`/`installation`/`installation_repositories`) |
 | `401 Unauthorized` | HMAC inválido |
 | `400 Bad Request` | Body malformado |
+| `422 Unprocessable Entity` | Payload não bate com o contrato esperado |
 | `500 Internal Server Error` | Falha ao publicar em Kafka (raro) |
 
-**Side effects:**
+**Side effects (por `event_type`):**
 
-1. Publica em `github.events.raw` (sempre)
-2. Se for `pull_request.{opened,synchronize,reopened}`, publica jobs em `jobs.orchestration` (`scope=pr`) — um por scanner habilitado
-3. Se for `push` na default branch, publica jobs em `jobs.orchestration` (`scope=branch`, Security Baseline)
-4. Se for `installation`/`installation_repositories`, publica em `repository.registered.v1`/`repository.unregistered.v1`
+1. `pull_request.{opened,synchronize,reopened}`: publica jobs em `jobs.orchestration` (`scope=pr`) — um por scanner habilitado
+2. `push` na default branch: publica jobs em `jobs.orchestration` (`scope=branch`, Security Baseline)
+3. `ping` (payload utilizável) ou `installation`/`installation_repositories` (`action=created`/`added`): registra o repositório no pequod via REST (`POST /internal/repositories/register`), dispara o mesmo Security Baseline do item 2 e, se `ENABLE_REPO_SCAFFOLD_PR`, o auto-scaffold — tudo em `background_tasks`, pela pipeline compartilhada `onboard_repository` (ver [captain-hook.md](../captain-hook.md))
+4. `installation`/`installation_repositories` (`action=deleted`/`removed`): desregistra via REST (`POST /internal/repositories/unregister`) — sem baseline nem scaffold
 
 **Exemplo:**
 

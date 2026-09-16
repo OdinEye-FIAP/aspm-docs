@@ -2,6 +2,8 @@
 
 Ponto de entrada do GitHub: recebe webhooks, valida HMAC e publica `JobDescriptor v1` no Kafka (`jobs.orchestration`). Também expõe endpoints HTTP síncronos consumidos diretamente pelo `heimdall-dashboard` e para disparo manual do auto-scaffold.
 
+Desde a migração REST de ping/install (PR #44, mergeado 15/set/2026 — ver [proposta de implementação](design/ping-install-rest-migration.md), agora implementada), o captain-hook também é **cliente HTTP síncrono do pequod**: `ping` e `installation`/`installation_repositories` não publicam mais em Kafka pra registrar repositório — chamam `POST /internal/repositories/register`/`/unregister` diretamente (`diplomat/http_out/pequod_client.py`), com retry embutido. Os tópicos `repository.registered.v1`/`repository.unregistered.v1` deixaram de existir.
+
 ## Quick start
 
 ```bash
@@ -28,10 +30,10 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 | Evento | Action(s) monitoradas | O que dispara |
 |---|---|---|
-| `ping` | — | registra o repositório no pequod (`repository.registered.v1`) e, em background, avalia o auto-scaffold (`ENABLE_REPO_SCAFFOLD_PR`) |
+| `ping` | — | registra o repositório no pequod via REST (`POST /internal/repositories/register`), dispara **Security Baseline** (scope=`branch`) imediato e, se `ENABLE_REPO_SCAFFOLD_PR`, o auto-scaffold — tudo dentro de `background_tasks`, respondendo `202` antes de processar (mesmo status de todo `/webhook`) |
 | `pull_request` | `opened`, `synchronize`, `reopened` | inicia o **Quality Gate** (scope=`pr`): publica `quality-gate.workflow.started.v1` + 1 `JobDescriptor` por scanner habilitado em `jobs.orchestration` |
 | `push` | push na **default branch** do repositório | inicia o **Security Baseline** (scope=`branch`): mesma máquina do Quality Gate (`workflow.started` + `jobs.orchestration`), sem `SONAR_PULLREQUEST_*`/`base_ref` (full-branch scan) — ver `controller/push_controller.py` |
-| `installation` | `created`, `deleted` | registra/desregistra em massa todos os repositórios cobertos pela instalação da App — **nunca** dispara auto-scaffold (evitaria abrir dezenas de PRs simultâneos) |
+| `installation` | `created`, `deleted` | registra/desregistra em massa (REST) todos os repositórios cobertos pela instalação da App, em **paralelo** (`installation_max_concurrency`); `created` também dispara Security Baseline + auto-scaffold por repositório (mesma pipeline do `ping`) |
 | `installation_repositories` | `added`, `removed` | idem, para mudança de escopo de repositórios de uma instalação já existente |
 
 Eventos sem processamento dedicado são logados e descartados — não fazem o webhook retornar erro.
@@ -41,7 +43,7 @@ Eventos sem processamento dedicado são logados e descartados — não fazem o w
 
 ## Como `ping` e `installation(_repositories)` são processados (sequência)
 
-Esses eventos não geram `JobDescriptor`/scanner — só afetam o inventário de repositórios no pequod (`repository.registered.v1` / `repository.unregistered.v1`). Não havia ainda um diagrama sequencial pra esse fluxo (só a tabela acima); fica registrado aqui, ao lado dos diagramas de check_run.
+Desde o PR #44 (15/set/2026), esses eventos fazem bem mais que registrar o repositório: registro **REST** síncrono no pequod, **Security Baseline** (scope=`branch`) imediato e **auto-scaffold**, tudo pela mesma pipeline compartilhada (`controller/repository_onboarding.py::onboard_repository`) — `ping` a chama 1x por webhook, `installation`/`installation_repositories` a chama Nx em paralelo, uma por repositório. Os diagramas abaixo substituem a versão anterior (só publish Kafka de registro).
 
 ### `ping`
 
@@ -49,20 +51,36 @@ Esses eventos não geram `JobDescriptor`/scanner — só afetam o inventário de
 sequenceDiagram
     participant GH as GitHub
     participant CH as captain-hook
-    participant K as Kafka (repository.registered.v1)
     participant PQ as pequod
+    participant K as Kafka
+    participant MD as moby-dick
 
     GH->>CH: POST /webhook (ping)
-    CH->>CH: process_ping_event
+    CH-->>GH: 202 Accepted imediato
+    Note over CH: processo inteiro roda em background_tasks —<br/>inclusive decidir se o payload é utilizável
+
     alt payload utilizável (repo individual, com dados completos)
-        CH->>K: publish repository.registered.v1
-        K->>PQ: consome e registra o repositório
-        CH->>CH: background_tasks.add_task(process_repository_scaffold)
-        Note over CH: scaffold só é avaliado aqui —<br/>chamadas à API do GitHub (branch/commit/PR)<br/>rodam depois da resposta HTTP
+        Note over CH: onboard_repository(event) —<br/>pipeline compartilhada com installation
+        CH->>PQ: POST /internal/repositories/register<br/>(header X-Service-Token)
+        PQ-->>CH: 200 (upsert + audit log)
+        alt event.default_branch preenchido
+            CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
+            alt repo tem commits
+                GH-->>CH: head_sha
+                CH->>K: publish quality-gate.workflow.started.v1 (scope=branch)
+                CH->>K: publish jobs.orchestration (1 por scanner habilitado)
+                K->>MD: consome (idêntico ao fluxo de push)
+            else repo vazio
+                GH-->>CH: 404
+                Note over CH: baseline pulado (log INFO) — resto do<br/>onboarding segue normalmente
+            end
+        end
+        opt ENABLE_REPO_SCAFFOLD_PR=true
+            CH->>CH: auto-scaffold (process_repository_scaffold)
+        end
     else payload incompleto (sem repositório individual — ex.: ping de app/org)
-        Note over CH: nenhum evento publicado, nenhum scaffold
+        Note over CH: nada publicado, nenhuma chamada extra
     end
-    CH-->>GH: 200 OK
 ```
 
 ### `installation` / `installation_repositories`
@@ -71,29 +89,36 @@ sequenceDiagram
 sequenceDiagram
     participant GH as GitHub
     participant CH as captain-hook
-    participant K as Kafka (repository.*)
     participant PQ as pequod
+    participant K as Kafka
+    participant MD as moby-dick
 
     GH->>CH: POST /webhook (installation | installation_repositories)
-    CH-->>GH: 200 OK imediato
-    Note over CH: processamento agendado via background_tasks —<br/>publicar N repositórios pode passar<br/>do timeout curto do webhook (~10s)
+    CH-->>GH: 202 Accepted imediato
+    Note over CH: processamento em background_tasks
 
-    CH->>CH: process_installation(_repositories)_event
-    alt action = created | added
-        loop 1 por repositório, sequencial, falha isolada
-            CH->>K: publish repository.registered.v1
-        end
-    else action = deleted | removed
-        loop 1 por repositório, sequencial, falha isolada
-            CH->>K: publish repository.unregistered.v1
+    par por repositório (até installation_max_concurrency simultâneos)
+        alt action = created | added
+            Note over CH: onboard_repository(event) — mesma função do ping
+            CH->>PQ: POST /internal/repositories/register
+            PQ-->>CH: 200 (upsert + audit log)
+            CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
+            GH-->>CH: head_sha (ou 404 — baseline pulado, resto segue)
+            CH->>K: publish workflow.started + jobs.orchestration (scope=branch)
+            K->>MD: consome
+            opt ENABLE_REPO_SCAFFOLD_PR=true
+                CH->>CH: auto-scaffold
+            end
+        else action = deleted | removed
+            CH->>PQ: POST /internal/repositories/unregister
         end
     end
-    K->>PQ: consome e registra/desregistra em massa
-    Note over CH: nunca dispara auto-scaffold —<br/>evitaria abrir dezenas de PRs simultâneos numa org grande
+    end
+    Note over CH: asyncio.gather — 1 falha isolada (registro,<br/>baseline ou scaffold de UM repo) não aborta as demais
 ```
 
 !!! note "Fonte"
-    `controller/webhook_controller.py` (roteamento), `controller/ping_controller.py`, `controller/installation_controller.py`. Confirmado em `main` em 2026-09-10.
+    `controller/webhook_controller.py` (roteamento), `controller/ping_controller.py`, `controller/installation_controller.py` (`_process_repositories_concurrently`), `controller/repository_onboarding.py` (`onboard_repository`, núcleo compartilhado), `adapter/wire_in/install_baseline_adapter.py`, `controller/baseline_jobs.py`, `diplomat/http_out/pequod_client.py`, `diplomat/http_out/github_write_client.py` (`get_ref_sha`, trata `404` como repo vazio). Confirmado em `main` em 2026-09-16 (PR #44, mergeado 2026-09-15).
 
 ## Scanners disparados
 
@@ -126,11 +151,13 @@ flowchart LR
   CH[captain-hook]
   K[(Kafka/Redpanda)]
   HD[heimdall-dashboard]
+  PQ[pequod]
 
   GH -->|pull_request opened/synchronize/reopened| CH
   GH -->|push na default branch| CH
   GH -->|"ping / installation(_repositories)"| CH
   HD -->|GET live-info / POST scaffold-pr| CH
+  CH -->|POST register/unregister REST síncrono| PQ
   CH -->|publish jobs.orchestration N scanners + quality-gate.workflow.started.v1| K
 ```
 

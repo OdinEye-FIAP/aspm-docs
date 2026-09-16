@@ -29,8 +29,9 @@ uvicorn main:app --host 0.0.0.0 --port 7070
 | `quality-gate.workflow.started.v1` | consome | captain-hook → pequod |
 | `quality-gate.scanner.completed.v1` | consome | moby-dick → pequod |
 | `quality-gate.evaluated.v1` | publica (fallback) | pequod → interessados |
-| `repository.registered.v1` | consome | captain-hook → pequod |
-| `repository.unregistered.v1` | consome | captain-hook → pequod |
+
+!!! note "Registro de repositório não é mais Kafka"
+    Até o PR #44 do captain-hook (mergeado 2026-09-15), o pequod consumia `repository.registered.v1`/`repository.unregistered.v1`. Hoje é REST síncrono: captain-hook chama `POST /internal/repositories/register`/`/unregister` (ver [captain-hook.md](captain-hook.md)).
 
 !!! warning "O caminho principal do Quality Gate não é mais assíncrono"
     Hoje a decisão do Quality Gate é resolvida pelo endpoint HTTP síncrono `POST /internal/quality-gates/{workflow_id}/evaluate`, chamado pelo moby-dick a cada scanner concluído. O evento Kafka `quality-gate.evaluated.v1` só é publicado como rede de segurança quando o gate finaliza sem nenhuma chamada HTTP em andamento (mensagens fora de ordem ou timeout).
