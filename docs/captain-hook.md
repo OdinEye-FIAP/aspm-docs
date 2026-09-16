@@ -30,7 +30,7 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 | Evento | Action(s) monitoradas | O que dispara |
 |---|---|---|
-| `ping` | — | registra o repositório no pequod via REST (`POST /internal/repositories/register`), dispara **Security Baseline** (scope=`branch`) imediato e, se `ENABLE_REPO_SCAFFOLD_PR`, o auto-scaffold — tudo dentro de `background_tasks`, respondendo `200` antes de processar |
+| `ping` | — | registra o repositório no pequod via REST (`POST /internal/repositories/register`), dispara **Security Baseline** (scope=`branch`) imediato e, se `ENABLE_REPO_SCAFFOLD_PR`, o auto-scaffold — tudo dentro de `background_tasks`, respondendo `202` antes de processar (mesmo status de todo `/webhook`) |
 | `pull_request` | `opened`, `synchronize`, `reopened` | inicia o **Quality Gate** (scope=`pr`): publica `quality-gate.workflow.started.v1` + 1 `JobDescriptor` por scanner habilitado em `jobs.orchestration` |
 | `push` | push na **default branch** do repositório | inicia o **Security Baseline** (scope=`branch`): mesma máquina do Quality Gate (`workflow.started` + `jobs.orchestration`), sem `SONAR_PULLREQUEST_*`/`base_ref` (full-branch scan) — ver `controller/push_controller.py` |
 | `installation` | `created`, `deleted` | registra/desregistra em massa (REST) todos os repositórios cobertos pela instalação da App, em **paralelo** (`installation_max_concurrency`); `created` também dispara Security Baseline + auto-scaffold por repositório (mesma pipeline do `ping`) |
@@ -56,7 +56,7 @@ sequenceDiagram
     participant MD as moby-dick
 
     GH->>CH: POST /webhook (ping)
-    CH-->>GH: 200 OK imediato
+    CH-->>GH: 202 Accepted imediato
     Note over CH: processo inteiro roda em background_tasks —<br/>inclusive decidir se o payload é utilizável
 
     alt payload utilizável (repo individual, com dados completos)
@@ -94,7 +94,7 @@ sequenceDiagram
     participant MD as moby-dick
 
     GH->>CH: POST /webhook (installation | installation_repositories)
-    CH-->>GH: 200 OK imediato
+    CH-->>GH: 202 Accepted imediato
     Note over CH: processamento em background_tasks
 
     par por repositório (até installation_max_concurrency simultâneos)
