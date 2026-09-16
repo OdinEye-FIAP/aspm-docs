@@ -1,8 +1,11 @@
 # Proposta: registro de repositório via REST + Security Baseline em `ping`/`installation`
 
-> **Status:** proposta, não implementada. Este documento é a especificação
-> de implementação — foi escrito para que uma sessão/chat diferente do que
-> o discutiu possa implementar sem precisar do histórico da discussão.
+> **Status: implementada.** Fase A+B mergeadas no captain-hook em
+> 2026-09-15 (PR #44) — o endpoint REST correspondente no pequod já
+> estava no ar (PR #55, mencionado no changeset abaixo). Este documento
+> permanece como registro histórico da especificação e das decisões
+> tomadas durante o design; o comportamento atual está descrito em
+> [captain-hook.md](../captain-hook.md#como-ping-e-installation_repositories-são-processados-sequência).
 > Discussão original: `decisions.md` → seção "Open questions", item
 > "Confiabilidade do producer em `installation`/`installation_repositories`"
 > (levantado 2026-09-10/11).
@@ -226,7 +229,7 @@ branch de desregistro, que não publica esse tópico.
 > histórico de auditoria já está impreciso pra repositórios registrados em
 > massa. Não corrigido aqui porque foge do escopo (REST + baseline); vale
 > um radar/fix separado em `decisions.md`.
-
+>
 > **Achado à parte, confirmado em 2026-09-14 — registro "capenga" via
 > self-heal do finding:** o pequod tem uma rede de segurança pra não
 > travar a ingestão de `findings.raw` quando o repo nunca foi registrado:
@@ -409,9 +412,9 @@ Dado que `onboard_repository` já nasce fazendo Fase A (registro) + Fase B (base
 
 ## Documentação a atualizar depois da implementação
 
-- `docs/captain-hook.md`: os dois diagramas sequenciais de `ping`/`installation` (adicionados no PR #19) passam a refletir REST + baseline + auto-scaffold via `onboard_repository` compartilhado + resposta imediata via `background_tasks` + paralelização do loop de `installation`, não mais só Kafka de registro sequencial.
-- `docs/reference/kafka-topics.md`: remove `repository.registered.v1`/`.unregistered.v1` e as DLQs correspondentes.
-- `docs/reference/http-endpoints.md`: adiciona `/internal/repositories/register`/`unregister` no pequod; atualiza a lista de "Side effects" do `POST /webhook` do captain-hook; documenta que `ping` agora também responde antes de processar (como `installation`); documenta que `installation`/`installation_repositories` agora também pode abrir PR de scaffold e processa repositórios em paralelo.
+- `docs/captain-hook.md`: os dois diagramas sequenciais de `ping`/`installation` (adicionados no PR #19) passam a refletir REST + baseline + auto-scaffold via `onboard_repository` compartilhado + resposta imediata via `background_tasks` + paralelização do loop de `installation`. **Feito em 2026-09-16 — ver `docs/captain-hook-ping-install-rest`.**
+- `docs/reference/kafka-topics.md`: remove `repository.registered.v1`/`.unregistered.v1` e as DLQs correspondentes. **Pendente.**
+- `docs/reference/http-endpoints.md`: adiciona `/internal/repositories/register`/`unregister` no pequod; atualiza a lista de "Side effects" do `POST /webhook` do captain-hook; documenta que `ping` agora também responde antes de processar (como `installation`); documenta que `installation`/`installation_repositories` agora também pode abrir PR de scaffold e processa repositórios em paralelo. **Pendente.**
     - **Achado à parte, não relacionado a esta proposta:** esse mesmo arquivo hoje lista `github.events.raw` como side-effect "sempre" publicado pelo `/webhook` — esse tópico não existe no código (já corrigido em `architecture.md`/`kafka-topics.md`/`decisions.md`, mas este arquivo específico ficou de fora daquela correção). Vale um fix separado, pequeno, independente desta proposta.
-- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita (incluindo a paralelização, o fix do `get_ref_sha` e a extração do `onboard_repository`); mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 3), pra revisão da necessidade do audit log em si (item 4), pro registro capenga via self-heal (item 6), pro `suspend`/`unsuspend` ignorado (item 7) e pro rate limit reativo (item 8) de "Pontos abertos" acima.
-- `docs/overview/repos.md`: responsabilidades do captain-hook mencionam "publicar registro/baixa via Kafka" — atualizar pra REST; mencionar processamento paralelo de `installation` e o novo `onboard_repository` compartilhado.
+- `docs/overview/decisions.md`: nova decisão numerada (ex. §19) documentando a mudança feita (incluindo a paralelização, o fix do `get_ref_sha` e a extração do `onboard_repository`); mover o item de "Open questions" pra "Resolvido"; adicionar radar novo pro achado do audit log `_via_ping` (item 3), pra revisão da necessidade do audit log em si (item 4), pro registro capenga via self-heal (item 6), pro `suspend`/`unsuspend` ignorado (item 7) e pro rate limit reativo (item 8) de "Pontos abertos" acima. **Pendente.**
+- `docs/overview/repos.md`: responsabilidades do captain-hook mencionam "publicar registro/baixa via Kafka" — atualizar pra REST; mencionar processamento paralelo de `installation` e o novo `onboard_repository` compartilhado. **Pendente.**
