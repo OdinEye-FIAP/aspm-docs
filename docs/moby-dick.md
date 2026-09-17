@@ -42,7 +42,7 @@ sequenceDiagram
     participant PQ as Pequod (HTTP síncrono)
 
     K->>JC: mensagem (job_id, image, command, env, callback)
-    JC->>JC: adquire semaphore<br/>(até SCANNER_MAX_CONCURRENCY jobs em paralelo, mesmo com<br/>1 partição só — ANTES de decodificar/validar a mensagem)
+    JC->>JC: adquire semaphore<br/>(até SCANNER_MAX_CONCURRENCY jobs em paralelo,<br/>mesmo com 1 partição só — ANTES de decodificar/validar a mensagem)
     JC->>JC: decode_json_value + verify_signed_message<br/>(HMAC x-odineye-signature-v1, timestamp anti-replay,<br/>producer esperado = captain-hook)
 
     alt assinatura ou schema inválidos
@@ -77,7 +77,7 @@ sequenceDiagram
                     else já finalizado por outro scanner (already_finalized)
                         Note over PJ: replay ignorado — sem atualização redundante
                     else ready=false ou Pequod indisponível/5xx
-                        Note over PJ: nada a fazer agora — próximo scanner que<br/>terminar tenta de novo, ou o consumer de<br/>quality-gate.evaluated.v1 (fallback) cobre
+                        Note over PJ: nada a fazer agora — próximo scanner que<br/>terminar tenta de novo, ou o consumer de<br/>quality-gate.evaluated.v1, como fallback, cobre
                     end
                 end
                 PJ->>PJ: marca job_id como completado<br/>(cache local, limite 4096)
@@ -89,13 +89,12 @@ sequenceDiagram
         end
 
         PJ-->>JC: retorna
+        JC->>JC: libera semaphore
+        JC->>K: commit offset — só quando todos os offsets<br/>anteriores da mesma partição também terminaram
     end
-
-    JC->>JC: libera semaphore (sempre, mesmo em erro)
-    JC->>K: commit offset — só quando todos os offsets<br/>anteriores da mesma partição também terminaram
 ```
 
-Detalhes que não aparecem no diagrama mas mudam o comportamento em produção:
+Dois detalhes que não aparecem no diagrama mas mudam o comportamento em produção:
 
 - **Assinatura HMAC** é obrigatória por padrão (`KAFKA_REQUIRE_SIGNATURE=true`); sem `KAFKA_MESSAGE_SECRET` configurado igual nos dois lados (captain-hook produzindo, moby-dick consumindo), toda mensagem cai em DLQ por `message_rejected`.
 - **Idempotência tem duas camadas**: o lock/cache de `job_id` evita reprocessar dentro da mesma instância (redelivery do Kafka), e o `external_id=job_id` no check run do GitHub evita duplicar checks mesmo que uma segunda instância do moby-dick processe a mesma mensagem.
@@ -122,7 +121,7 @@ sequenceDiagram
         PQ-->>MD: sem event
         Note over MD: nada a fazer — próximo scanner que terminar tenta de novo
     else Pequod indisponível / 5xx / 404
-        Note over MD: erro é logado (warning) e engolido;<br/>consumer de quality-gate.evaluated.v1 (fallback) cobre o caso raro
+        Note over MD: erro é logado como warning e engolido;<br/>consumer de quality-gate.evaluated.v1, como fallback, cobre o caso raro
     end
 ```
 
