@@ -62,7 +62,7 @@ sequenceDiagram
             else
                 PJ->>GH: get_installation_token (GitHub App)
                 PJ->>D: run(image, command, env+GIT_TOKEN, volumes?)
-                D-->>PJ: exit_code, logs, SARIF<br/>(arquivo via get_archive; se ausente,<br/>fallback por markers no stdout)
+                D-->>PJ: exit_code, logs, SARIF<br/>arquivo via get_archive, com fallback<br/>por markers no stdout se ausente
                 PJ->>K2: publish findings.raw<br/>(retry local — nunca rereoda o container)
                 Note over PJ: pertence a Quality Gate + sem SARIF e sem erro<br/>explícito → vira falha (sarif_missing)
                 opt job pertence a um Quality Gate
@@ -121,7 +121,7 @@ sequenceDiagram
         PQ-->>MD: sem event
         Note over MD: nada a fazer — próximo scanner que terminar tenta de novo
     else Pequod indisponível / 5xx / 404
-        Note over MD: erro é logado como warning e engolido;<br/>consumer de quality-gate.evaluated.v1, como fallback, cobre o caso raro
+        Note over MD: erro é logado como warning e engolido<br/>consumer de quality-gate.evaluated.v1, como fallback, cobre o caso raro
     end
 ```
 
