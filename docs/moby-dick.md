@@ -187,7 +187,7 @@ flowchart LR
   MD -->|POST evaluate quality-gate síncrono| PQ
   PQ -->|ready=true: QualityGateEvaluatedEvent| MD
   MD -->|update check_run consolidado + individual| GH
-  MD -->|upsert Issue de baseline (scope=branch)| GH
+  MD -->|upsert Issue de baseline se scope=branch| GH
   K -->|consume evaluated fallback| MD
 ```
 
