@@ -26,6 +26,20 @@ python3 main.py
 !!! note "Confirmado em `main` (reconfirmado 2026-09-10)"
     `baseline_sink_controller.py` e os campos `scope`/`branch_name` em `wire/schemas/quality_gate_v1.py` estão em `main` desde 31/ago/2026 (PR #38), junto com o rollout equivalente em captain-hook e pequod. Ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico completo (inclui uma verificação que, mais tarde na mesma data, concluiu erroneamente o contrário a partir de refs git locais desatualizadas — já corrigida).
 
+## Tópicos Kafka
+
+7 tópicos no total (`config/settings.py`), 3 consumidos e 4 produzidos:
+
+| Tópico | Direção | Resumo |
+|---|---|---|
+| `jobs.orchestration` | consome (`JobConsumer`) | 1 mensagem por scanner (sonar/semgrep/trivy/zap) — o job real, com imagem Docker, comando e env. Captain-hook publica N dessas por PR. |
+| `quality-gate.workflow.started.v1` | consome (`QualityGateConsumer`) | Aviso de que um Quality Gate começou, com a lista de scanners esperados (`expected_scanners`). Só cria/reconcilia o check consolidado — não dispara scan nenhum. |
+| `quality-gate.evaluated.v1` | consome (`QualityGateConsumer`) | Rede de segurança: cobre a finalização do gate se o `POST /evaluate` síncrono ao pequod não rolar. Não é mais o caminho principal. |
+| `findings.raw` | produz | Resultado (findings) de cada scanner, extraído do SARIF, publicado depois de cada execução de container. |
+| `quality-gate.scanner.completed.v1` | produz | Aviso de "esse scanner terminou", publicado junto com `findings.raw` quando o job pertence a um Quality Gate. É o que o pequod usa pra saber quantos scanners já chegaram. |
+| `jobs.orchestration.dlq` | produz | Mensagem de `jobs.orchestration` que falhou validação (assinatura/schema) ou cujo handler explodiu sem tratamento. |
+| `quality-gate.moby-dick.dlq` | produz | DLQ equivalente pro lado do `QualityGateConsumer` (mensagens de `workflow.started`/`evaluated` que falham). |
+
 ## Execução de um job (`JobConsumer` → scanner → resultado)
 
 Do consumo da mensagem em `jobs.orchestration` até o check individual atualizado no GitHub, passando por assinatura HMAC, DLQ, concorrência limitada e idempotência de execução — nenhuma dessas peças aparecia neste doc antes, embora já estivessem implementadas e documentadas no `README.md` do próprio moby-dick:
