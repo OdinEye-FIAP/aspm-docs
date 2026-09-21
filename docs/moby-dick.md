@@ -26,6 +26,20 @@ python3 main.py
 !!! note "Confirmado em `main` (reconfirmado 2026-09-10)"
     `baseline_sink_controller.py` e os campos `scope`/`branch_name` em `wire/schemas/quality_gate_v1.py` estão em `main` desde 31/ago/2026 (PR #38), junto com o rollout equivalente em captain-hook e pequod. Ver [Decisão §15](overview/decisions.md#15-quality-gate-com-scopepr-e-scopebranch-security-baseline--ponta-a-ponta-em-main-reconfirmado-2026-09-10) para o histórico completo (inclui uma verificação que, mais tarde na mesma data, concluiu erroneamente o contrário a partir de refs git locais desatualizadas — já corrigida).
 
+## Tópicos Kafka
+
+7 tópicos no total (`config/settings.py`), 3 consumidos e 4 produzidos:
+
+| Tópico | Direção | Resumo |
+|---|---|---|
+| `jobs.orchestration` | consome (`JobConsumer`) | 1 mensagem por scanner (sonar/semgrep/trivy/zap) — o job real, com imagem Docker, comando e env. Captain-hook publica N dessas por PR. |
+| `quality-gate.workflow.started.v1` | consome (`QualityGateConsumer`) | Aviso de que um Quality Gate começou, com a lista de scanners esperados (`expected_scanners`). Só cria/reconcilia o check consolidado — não dispara scan nenhum. |
+| `quality-gate.evaluated.v1` | consome (`QualityGateConsumer`) | Rede de segurança: cobre a finalização do gate se o `POST /evaluate` síncrono ao pequod não rolar. Não é mais o caminho principal. |
+| `findings.raw` | produz | Resultado (findings) de cada scanner, extraído do SARIF, publicado depois de cada execução de container. |
+| `quality-gate.scanner.completed.v1` | produz | Aviso de "esse scanner terminou", publicado junto com `findings.raw` quando o job pertence a um Quality Gate. É o que o pequod usa pra saber quantos scanners já chegaram. |
+| `jobs.orchestration.dlq` | produz | Mensagem de `jobs.orchestration` que falhou validação (assinatura/schema) ou cujo handler explodiu sem tratamento. |
+| `quality-gate.moby-dick.dlq` | produz | DLQ equivalente pro lado do `QualityGateConsumer` (mensagens de `workflow.started`/`evaluated` que falham). |
+
 ## Execução de um job (`JobConsumer` → scanner → resultado)
 
 Do consumo da mensagem em `jobs.orchestration` até o check individual atualizado no GitHub, passando por assinatura HMAC, DLQ, concorrência limitada e idempotência de execução — nenhuma dessas peças aparecia neste doc antes, embora já estivessem implementadas e documentadas no `README.md` do próprio moby-dick:
@@ -42,13 +56,13 @@ sequenceDiagram
     participant PQ as Pequod (HTTP síncrono)
 
     K->>JC: mensagem (job_id, image, command, env, callback)
+    JC->>JC: adquire semaphore<br/>(até SCANNER_MAX_CONCURRENCY jobs em paralelo,<br/>mesmo com 1 partição só — ANTES de decodificar/validar a mensagem)
     JC->>JC: decode_json_value + verify_signed_message<br/>(HMAC x-odineye-signature-v1, timestamp anti-replay,<br/>producer esperado = captain-hook)
 
     alt assinatura ou schema inválidos
         JC->>DLQ: publish_dlq(error_kind=message_rejected)
         Note over JC: offset commitado — mensagem já foi<br/>tratada (rejeitada), não fica "presa"
     else mensagem válida
-        JC->>JC: adquire semaphore<br/>(até SCANNER_MAX_CONCURRENCY jobs em paralelo,<br/>mesmo com 1 partição só)
         JC->>PJ: handler(job) — em task própria
 
         PJ->>PJ: lock asyncio por job_id +<br/>checa cache de jobs já completados (replay local?)
@@ -62,19 +76,22 @@ sequenceDiagram
             else
                 PJ->>GH: get_installation_token (GitHub App)
                 PJ->>D: run(image, command, env+GIT_TOKEN, volumes?)
-                D-->>PJ: exit_code, logs, SARIF<br/>(arquivo via get_archive; se ausente,<br/>fallback por markers no stdout)
+                D-->>PJ: exit_code, logs, SARIF<br/>arquivo via get_archive, com fallback<br/>por markers no stdout se ausente
                 PJ->>K2: publish findings.raw<br/>(retry local — nunca rereoda o container)
+                Note over PJ: pertence a Quality Gate + sem SARIF e sem erro<br/>explícito → vira falha (sarif_missing)
                 opt job pertence a um Quality Gate
-                    PJ->>K2: publish quality-gate.scanner.completed.v1
+                    PJ->>K2: publish quality-gate.scanner.completed.v1<br/>(mesmo retry local)
                 end
                 PJ->>GH: update_check_run (check individual, completed)
                 opt job pertence a um Quality Gate
                     PJ->>PQ: POST /internal/quality-gates/{workflow_id}/evaluate
-                    alt ready=true
+                    alt ready=true e ainda não finalizado
                         PQ-->>PJ: QualityGateEvaluatedEvent
                         PJ->>GH: update_check_run (check consolidado)<br/>+ upsert Issue de baseline se scope=branch
+                    else já finalizado por outro scanner (already_finalized)
+                        Note over PJ: replay ignorado — sem atualização redundante
                     else ready=false ou Pequod indisponível/5xx
-                        Note over PJ: nada a fazer agora — próximo scanner que<br/>terminar tenta de novo, ou o consumer de<br/>quality-gate.evaluated.v1 (fallback) cobre
+                        Note over PJ: nada a fazer agora — próximo scanner que<br/>terminar tenta de novo, ou o consumer de<br/>quality-gate.evaluated.v1, como fallback, cobre
                     end
                 end
                 PJ->>PJ: marca job_id como completado<br/>(cache local, limite 4096)
@@ -95,6 +112,8 @@ Dois detalhes que não aparecem no diagrama mas mudam o comportamento em produç
 
 - **Assinatura HMAC** é obrigatória por padrão (`KAFKA_REQUIRE_SIGNATURE=true`); sem `KAFKA_MESSAGE_SECRET` configurado igual nos dois lados (captain-hook produzindo, moby-dick consumindo), toda mensagem cai em DLQ por `message_rejected`.
 - **Idempotência tem duas camadas**: o lock/cache de `job_id` evita reprocessar dentro da mesma instância (redelivery do Kafka), e o `external_id=job_id` no check run do GitHub evita duplicar checks mesmo que uma segunda instância do moby-dick processe a mesma mensagem.
+- **O semaphore de concorrência é adquirido antes de qualquer validação** — uma mensagem malformada ou com assinatura inválida também ocupa uma vaga de `SCANNER_MAX_CONCURRENCY` até a rejeição terminar, não é filtrada antes.
+- **Se publicar `findings.raw` ou `quality-gate.scanner.completed.v1` falhar depois de esgotar os retries**, a exceção propaga pro `JobConsumer`, que trata como `handler_failed` e manda pro DLQ — mesmo que o scanner tenha rodado com sucesso. Nesse caso raro, o offset só não commita se o próprio `publish_dlq` também falhar (preserva at-least-once).
 
 ## Subsistema de Quality Gate
 
@@ -116,7 +135,7 @@ sequenceDiagram
         PQ-->>MD: sem event
         Note over MD: nada a fazer — próximo scanner que terminar tenta de novo
     else Pequod indisponível / 5xx / 404
-        Note over MD: erro é logado (warning) e engolido;<br/>consumer de quality-gate.evaluated.v1 (fallback) cobre o caso raro
+        Note over MD: erro é logado como warning e engolido<br/>consumer de quality-gate.evaluated.v1, como fallback, cobre o caso raro
     end
 ```
 
@@ -182,7 +201,7 @@ flowchart LR
   MD -->|POST evaluate quality-gate síncrono| PQ
   PQ -->|ready=true: QualityGateEvaluatedEvent| MD
   MD -->|update check_run consolidado + individual| GH
-  MD -->|upsert Issue de baseline (scope=branch)| GH
+  MD -->|upsert Issue de baseline se scope=branch| GH
   K -->|consume evaluated fallback| MD
 ```
 
