@@ -147,7 +147,7 @@ sequenceDiagram
             PIS->>AI: analyze_finding(finding)
             AI-->>PIS: recommendation, priority, confidence
             PIS->>PQ: POST /finding-analyses
-            PQ-->>PIS: 201 (upsert + audit log, mesma transacao)
+            PQ-->>PIS: 201 (upsert)
         end
         Note over PIS: falha isolada por finding vai pro failed, nao aborta o lote
         end
@@ -161,7 +161,7 @@ sequenceDiagram
             AI-->>PIS: risks (merge, keep ou split)
             Note over PIS: normalize_semantic_output valida particao exata dos findings, remove conflitos, fallback keep pros nao cobertos
             PIS->>PQ: POST /semantic-clustering-decisions
-            PQ-->>PIS: 201, consolidated_risk criado (links + audit log, idempotente por proposal_id)
+            PQ-->>PIS: 201, consolidated_risk criado (links, idempotente por proposal_id)
         else nenhum candidate pendente
             Note over PIS: retorna sem chamar a IA
         end

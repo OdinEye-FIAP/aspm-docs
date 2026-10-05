@@ -168,7 +168,7 @@ TARS_AUTO_ANALYZE_INTERVAL_SECONDS=60
 
 **Responsabilidades:**
 
-- Consome 3 backends via REST: `pequodApi.ts` (organizações, aplicações, scans, alertas, risk exceptions, audit log, security gate, quality gate, riscos consolidados), `tarsApi.ts` (análises de IA), `captainHookApi.ts` (live-info de repositório, scaffold de PR)
+- Consome 3 backends via REST: `pequodApi.ts` (organizações, aplicações, scans, alertas, risk exceptions, security gate, quality gate, riscos consolidados), `tarsApi.ts` (análises de IA), `captainHookApi.ts` (live-info de repositório, scaffold de PR)
 - 6 abas: organizações, repositórios, governança, quality gate, findings técnicos, riscos consolidados
 - 23 componentes em `src/components/`
 

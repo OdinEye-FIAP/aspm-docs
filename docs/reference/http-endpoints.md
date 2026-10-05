@@ -148,13 +148,6 @@ Prefixo versionado: `/api/v1`. Rotas legadas (`/findings*`) e as de integração
 | `GET` | `/api/v1/alerts` |
 | `GET` | `/api/v1/alerts/{alert_id}` |
 
-### Audit Log
-
-| Método | Path |
-|---|---|
-| `GET` | `/api/v1/audit-logs` |
-| `GET` | `/api/v1/audit-logs/{audit_log_id}` |
-
 ### Security Gate
 
 | Método | Path |

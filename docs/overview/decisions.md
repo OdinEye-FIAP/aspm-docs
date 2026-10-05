@@ -198,6 +198,16 @@ Sem mudanças — decisão ainda vigente como descrita.
 
 ---
 
+## 19. Audit log removido do pequod (2026-10-05)
+
+**Decisão:** a tabela `audit_log` (append-only, com triggers bloqueando UPDATE/DELETE), o `model/audit_log.py`, o repositório de escrita, os endpoints `GET /api/v1/audit-logs[/{id}]` e a `AuditTimeline` do heimdall-dashboard foram removidos. Os controllers do pequod deixaram de gravar eventos de auditoria, e os campos `audit_log_id`/`alert_audit_log_id` saíram das respostas da API (incluindo `security_gate_audit_log_id` no `metadata` do quality gate). O contexto de requisição usado só para auditoria (`x-actor-*`, `x-correlation-id`, `x-request-id`, IP, user-agent) também foi removido.
+
+**Por quê:** nada no ecossistema decidia com base no audit log — era só gravado e exibido (12 eventos na timeline do heimdall, sem diff nem filtro). Mantê-lo acoplava todos os controllers a uma tabela sem consumidor real. Se uma trilha de auditoria voltar, será redesenhada em vez de reaproveitar este formato.
+
+**Efeito em bancos existentes:** o `schema.sql` é consolidado e sem migrations, então bancos já criados precisam de `DROP TABLE audit_log; DROP FUNCTION prevent_audit_log_mutation();` manualmente. Isso responde à pergunta em aberto de [`design/ping-install-rest-migration.md`](../design/ping-install-rest-migration.md) sobre o audit log de registro/desregistro ser desnecessário.
+
+---
+
 ## Princípios em jogo
 
 - **Reuso de schema sobre reuso de código:** serviços falam por contratos versionados (`wire/schemas/`).

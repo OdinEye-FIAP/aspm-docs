@@ -6,13 +6,13 @@ Convenção de nomenclatura: `finding_cluster`/`finding_cluster_member` represen
 
 ## Diagrama (estilo dbdiagram)
 
-**Total: 23 tabelas** no schema (`finding`, `finding_ai_analysis`, `finding_cluster`, `finding_cluster_ai_analysis`, `finding_cluster_member`, `applications`, `security_tools`, `scans`, `scan_artifacts`, `finding_occurrences`, `finding_identifiers`, `alerts`, `audit_log`, `risk_exceptions`, `security_gate_policies`, `security_gate_evaluations`, `security_gate_items`, `quality_gate_runs`, `quality_gate_scanner_runs`, `semantic_clustering_decision`, `consolidated_risk`, `consolidated_risk_candidate`, `consolidated_risk_finding`).
+**Total: 22 tabelas** no schema (`finding`, `finding_ai_analysis`, `finding_cluster`, `finding_cluster_ai_analysis`, `finding_cluster_member`, `applications`, `security_tools`, `scans`, `scan_artifacts`, `finding_occurrences`, `finding_identifiers`, `alerts`, `risk_exceptions`, `security_gate_policies`, `security_gate_evaluations`, `security_gate_items`, `quality_gate_runs`, `quality_gate_scanner_runs`, `semantic_clustering_decision`, `consolidated_risk`, `consolidated_risk_candidate`, `consolidated_risk_finding`).
 
 Diagramas Mermaid ER com colunas e tipos, agrupados por domínio (mesma divisão do `schema.sql`). Renderizam como caixas de tabela conectadas no GitHub e no mkdocs-material.
 
-### Visão geral (todas as 23 tabelas)
+### Visão geral (todas as 22 tabelas)
 
-Colunas reduzidas ao essencial (PK/FK + poucos campos identificadores) para caber as 23 tabelas em um único diagrama. Para o detalhe completo de colunas, veja os diagramas por domínio logo abaixo.
+Colunas reduzidas ao essencial (PK/FK + poucos campos identificadores) para caber as 22 tabelas em um único diagrama. Para o detalhe completo de colunas, veja os diagramas por domínio logo abaixo.
 
 ```mermaid
 erDiagram
@@ -75,10 +75,6 @@ erDiagram
         uuid cluster_id FK
         uuid scan_id FK
     }
-    audit_log {
-        uuid id PK
-        uuid application_id FK
-    }
     risk_exceptions {
         uuid id PK
         uuid application_id FK
@@ -135,7 +131,6 @@ erDiagram
     applications ||--o{ finding : "application_id"
     applications ||--o{ scans : "application_id"
     applications ||--o{ alerts : "application_id"
-    applications ||--o{ audit_log : "application_id (opcional)"
     applications ||--o{ risk_exceptions : "application_id"
     applications ||--o{ security_gate_policies : "application_id (opcional)"
     applications ||--o{ security_gate_evaluations : "application_id"
@@ -489,7 +484,6 @@ Tabela de referência com toda foreign key do schema: tabela de origem, coluna, 
 | `alerts` | `finding_id` | `finding.id` | N:1 (opcional) | SET NULL | nullable |
 | `alerts` | `cluster_id` | `finding_cluster.id` | N:1 (opcional) | SET NULL | nullable |
 | `alerts` | `scan_id` | `scans.id` | N:1 (opcional) | SET NULL | nullable |
-| `audit_log` | `application_id` | `applications.id` | N:1 (opcional) | SET NULL | nullable |
 | `risk_exceptions` | `application_id` | `applications.id` | N:1 | RESTRICT | |
 | `risk_exceptions` | `finding_id` | `finding.id` | N:1 (xor) | CASCADE | exatamente um entre `finding_id`/`cluster_id` |
 | `risk_exceptions` | `cluster_id` | `finding_cluster.id` | N:1 (xor) | CASCADE | exatamente um entre `finding_id`/`cluster_id` |
@@ -586,9 +580,6 @@ Notificação (ex: Slack/webhook) gerada para um finding/cluster/scan. Colunas: 
 
 !!! warning "Não existe coluna `status` em `alerts`"
     Um alerta é considerado **aberto** enquanto `resolved_at IS NULL`, e **resolvido** quando `resolved_at` é preenchido — não há enum `status` (`pending`/`sent`/`failed`/...), nem colunas de canal de entrega/retry (`delivery_channel`, `destination`, `attempts`, `max_attempts`, `next_retry_at`). O filtro `GET /api/v1/alerts?resolved=` da API mapeia para `(resolved_at IS NULL) = NOT resolved`.
-
-### `audit_log`
-Log de auditoria append-only (triggers bloqueiam UPDATE/DELETE). Colunas: `application_id`, `entity_type`/`entity_id`, `action`, `actor_type`/`actor_id`/`actor_name`, `previous_data`/`new_data` (jsonb), `correlation_id`/`request_id`.
 
 ## Governança de risco e Quality Gate
 
