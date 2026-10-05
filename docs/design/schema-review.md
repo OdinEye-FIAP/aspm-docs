@@ -239,7 +239,7 @@ com sequenciamento pensado para minimizar risco (menor escopo primeiro), mas a d
 | `finding_occurrences` | Mantida — **vira a única fonte de verdade do payload SARIF por finding** (Fase 1) |
 | `finding_identifiers` | Mantida (tabela em si) — **perde a coluna `metadata`** (Fase 1, item #4, sempre vazia) |
 | `alerts` | Mantida sem alteração (infra de delivery não usada notada, não decidido remover) |
-| `audit_log` | Mantida sem alteração |
+| `audit_log` | **Removida em 2026-10-05** (ver [decisions.md §19](../overview/decisions.md)) |
 | `risk_exceptions` | Mantida sem alteração — confirmada como funcionalidade distinta e ativa |
 | `security_gate_policies` | Mantida sem alteração |
 | `security_gate_evaluations` | Mantida sem alteração (colunas de contagem denormalizadas notadas, não decidido remover) |

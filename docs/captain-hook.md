@@ -62,7 +62,7 @@ sequenceDiagram
     alt payload utilizável (repo individual, com dados completos)
         Note over CH: onboard_repository(event) —<br/>pipeline compartilhada com installation
         CH->>PQ: POST /internal/repositories/register<br/>(header X-Service-Token)
-        PQ-->>CH: 200 (upsert + audit log)
+        PQ-->>CH: 200 (upsert)
         alt event.default_branch preenchido
             CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
             alt repo tem commits
@@ -101,7 +101,7 @@ sequenceDiagram
         alt action = created | added
             Note over CH: onboard_repository(event) — mesma função do ping
             CH->>PQ: POST /internal/repositories/register
-            PQ-->>CH: 200 (upsert + audit log)
+            PQ-->>CH: 200 (upsert)
             CH->>GH: GET /repos/{owner}/{repo}/git/ref/heads/{default_branch}
             GH-->>CH: head_sha (ou 404 — baseline pulado, resto segue)
             CH->>K: publish workflow.started + jobs.orchestration (scope=branch)

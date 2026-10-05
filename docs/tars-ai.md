@@ -61,6 +61,8 @@ Configurado por `AI_PROVIDER` (`config/settings.py`). Provider padrão do códig
 
 Do lado do pequod, todas essas rotas vivem em `/api/v1/integrations/tars/*` (`diplomat/http_in/tars_integration_router.py`), autenticadas por `X-Service-Token` (`tars_auth.py::require_tars_service_token` — mesmo padrão de auth por header usado no restante do ecossistema; sem token configurado, dev local segue sem exigir auth).
 
+O endpoint de capacidades (`GET /api/v1/integrations/tars/capabilities`) informa `contract_version: "3"`. Esta versão remove os campos de auditoria das respostas TARS; consumers devem usar a versão para detectar essa alteração de contrato.
+
 ## Contrato de análise
 
 Individual finding (`finding_ai_analysis`, "slim"):
@@ -147,7 +149,7 @@ sequenceDiagram
             PIS->>AI: analyze_finding(finding)
             AI-->>PIS: recommendation, priority, confidence
             PIS->>PQ: POST /finding-analyses
-            PQ-->>PIS: 201 (upsert + audit log, mesma transacao)
+            PQ-->>PIS: 201 (upsert)
         end
         Note over PIS: falha isolada por finding vai pro failed, nao aborta o lote
         end
@@ -161,7 +163,7 @@ sequenceDiagram
             AI-->>PIS: risks (merge, keep ou split)
             Note over PIS: normalize_semantic_output valida particao exata dos findings, remove conflitos, fallback keep pros nao cobertos
             PIS->>PQ: POST /semantic-clustering-decisions
-            PQ-->>PIS: 201, consolidated_risk criado (links + audit log, idempotente por proposal_id)
+            PQ-->>PIS: 201, consolidated_risk criado (links, idempotente por proposal_id)
         else nenhum candidate pendente
             Note over PIS: retorna sem chamar a IA
         end
