@@ -29,7 +29,7 @@ Plataformas ASPM resolvem isso: 1 schema unificado, 1 lugar pra triagem, 1 fonte
 - ✅ **Triagem automática** — `tars-ai` classifica findings/clusters com recomendação, prioridade e confiança (Gemini `gemini-2.5-flash`, com Groq/HuggingFace como alternativa via factory)
 - ✅ **Correlação semântica** — clustering semântico via IA decide `merge`/`keep`/`split` entre candidatos correlacionados, gravado como risco consolidado no pequod
 - ⏳ **Reachability**: ainda não existe — agente que leria o código pra decidir se a vuln é alcançável
-- ✅ **Fix suggestions**: `moby-dick` posta `suggestion` commitável no PR (fix nativo do scanner, ou patch gerado pelo `tars-ai` quando `SUGGESTIONS_AI_ENABLED=true`); findings sem patch aplicável viram comentário de texto. Sem teto de comentários por PR — as reviews saem em lotes (`SUGGESTIONS_BATCH_SIZE`)
+- 🚧 **Fix suggestions**: `moby-dick` já posta `suggestion` commitável no PR com o fix nativo do scanner. Em implementação (moby-dick #49, tars-ai #13): patch gerado pelo `tars-ai` quando o scanner não traz fix (opt-in via `SUGGESTIONS_AI_ENABLED`), reviews em lotes (`SUGGESTIONS_BATCH_SIZE`) e teto total configurável de comentários por PR (`SUGGESTIONS_MAX_TOTAL_PER_PR`, 0 = ilimitado). Findings sem patch aplicável viram comentário de texto
 - ⏳ **Risk scoring** combinando severity + reachability + criticidade de negócio: parcial — hoje prioridade vem da triagem de IA, sem reachability nem criticidade de negócio no cálculo
 
 ## O que **este** projeto é
@@ -61,7 +61,7 @@ O ASPM-AI da OdinEye-FIAP construiu essa plataforma do zero, com foco em:
 | Fase 3.5 — Clustering semântico + risco consolidado | ✅ concluída |
 | Fase 3.75 — Dashboard de governança (heimdall-dashboard) | ✅ concluída |
 | Fase 4 — Reachability analysis | ⏳ não iniciada |
-| Fase 4 — Fix suggestions automáticos | ✅ concluída (fix nativo + patch via IA opt-in) |
+| Fase 4 — Fix suggestions automáticos | 🚧 em andamento (fix nativo ✅; patch via IA em implementação — moby-dick #49, tars-ai #13) |
 | Fase 5 — Risk scoring com criticidade de negócio + SLA | ⏳ não iniciada |
 
 !!! note "Sobre a Fase 2.5"
