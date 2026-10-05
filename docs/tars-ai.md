@@ -61,6 +61,8 @@ Configurado por `AI_PROVIDER` (`config/settings.py`). Provider padrão do códig
 
 Do lado do pequod, todas essas rotas vivem em `/api/v1/integrations/tars/*` (`diplomat/http_in/tars_integration_router.py`), autenticadas por `X-Service-Token` (`tars_auth.py::require_tars_service_token` — mesmo padrão de auth por header usado no restante do ecossistema; sem token configurado, dev local segue sem exigir auth).
 
+O endpoint de capacidades (`GET /api/v1/integrations/tars/capabilities`) informa `contract_version: "3"`. Esta versão remove os campos de auditoria das respostas TARS; consumers devem usar a versão para detectar essa alteração de contrato.
+
 ## Contrato de análise
 
 Individual finding (`finding_ai_analysis`, "slim"):
