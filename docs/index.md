@@ -85,7 +85,8 @@ flowchart LR
 | Triagem por IA (individual + cluster) | ✅ `tars-ai` (Gemini) |
 | Dashboard de governança | ✅ `heimdall-dashboard` |
 | Correlação cross-scanner mais ampla (grafo/embeddings gerais) | ⏳ parcial — candidate clustering + clustering semântico cobrem o caso principal |
-| Reachability analysis / fix suggestions automáticos | ⏳ não iniciado |
+| Fix suggestions (commit suggestions no PR) | ✅ `moby-dick` — fix nativo do scanner + patch via IA (`tars-ai`, opt-in), sem teto de comentários por PR |
+| Reachability analysis | ⏳ não iniciado |
 
 Estamos na fase de consolidação: pipeline E2E maduro tanto para PR (`scope=pr`) quanto para Security Baseline (`scope=branch`), com 4 scanners, governança de risco e triagem por IA já em produção. Próximos passos: reachability analysis, fix suggestions, sink de Issue por `consolidated_risk` (em vez da Issue agregada por branch), e métricas formais (Prometheus/OTEL).
 
