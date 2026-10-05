@@ -56,7 +56,7 @@ Sem mudanças — decisão ainda vigente como descrita.
 - API REST com **38 rotas reais** (contadas 2026-09-10: 5 top-level incluindo `/findings*` legado, 22 em `/api/v1/*`, 3 em quality-gates, 7 em `/integrations/tars/*`, 1 em `/internal/quality-gates/*`). Uma versão anterior desta página citava "~25 rotas" — contagem manual imprecisa, corrigida.
 
 **Ainda adiado consciente:**
-- Reachability analysis e fix suggestions automáticos (a triagem do TARS cobre recomendação/prioridade, não geração de patch)
+- Reachability analysis (fix suggestions: fix nativo do scanner já existe no `moby-dick`; patch via TARS (ligado por padrão) está em implementação — moby-dick #49, tars-ai #13)
 
 ---
 

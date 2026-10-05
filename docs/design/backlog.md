@@ -41,6 +41,30 @@ para `kind == "code"` usa bucket de 10 linhas (`int(line/10)*10`), então
 ocorrências da mesma regra no mesmo arquivo em buckets diferentes nunca são
 auto-anexadas ao mesmo risco. Caso concreto/reproduzível do item #30.
 
+### #50 — Quality Gate Run da main aparece como "PR #?" e sem branch
+**Repo:** heimdall-dashboard · **Área:** `QualityGateRunList.tsx` · **Tipo:** bug
+
+No card "Workflows recentes → Quality Gate Runs", runs disparadas por push na
+`main` (sem pull request) são exibidas com o título **"PR #?"** e sem a linha
+da branch, enquanto runs de PR mostram "PR #13" + `feature/trigger`. Causa
+provável: o título usa `run.pull_request_number || "?"` (linha ~59), então
+qualquer run sem PR cai no fallback "?". Esperado: para runs sem PR, mostrar
+algo como "Push · main" (ou "main @ <sha curto>"), exibindo a branch/ref igual
+às runs de PR. Verificar também `SecurityGatePanel.tsx` (linha ~19), que
+monta o rótulo `PR #...` de forma parecida, e se o backend (pequod) retorna a
+branch/ref para runs sem PR. Evidência: print do dashboard em 05/10/2026
+(run `1e3e244`, `OdinEye-FIAP/aspm-vuln-lab`, 4/4 scanners, status Failed).
+
+### #51 — Remover "Itens relevantes do Security Gate" do Quality Gate
+**Repo:** heimdall-dashboard (possivelmente pequod) · **Tipo:** melhoria / limpeza de UI
+
+Decisão: remover o trecho **"Itens relevantes do Security Gate"** da tela de
+Quality Gate. **Pergunta em aberto:** esse trecho tem entidade própria (tabela/
+endpoint no pequod) ou é só uma seção derivada de dados já existentes
+(ex.: `security_gate_evaluations`/findings)? Ainda não investigado — checar
+antes de remover para saber se basta tirar o componente do front ou se também
+há schema/API/contrato a limpar (mesmo padrão dos itens #44/#46/#48).
+
 ## Clustering / consolidated_risk — design maior (#19–#23)
 
 > A maioria destes itens já foi **superada** pela solução determinística
