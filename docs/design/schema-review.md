@@ -1,5 +1,10 @@
 # Revisão do schema/fluxo de dados do Pequod
 
+!!! note "Superado em parte (2026-10-06)"
+    A tabela `security_tools` e as colunas `scans.tool_id`/`finding.tool_id` citadas abaixo foram
+    removidas depois desta análise: o scanner agora é identificado por texto (`scanner` +
+    `scanner_class`). As menções a `tool_id` e `security_tools` neste documento são históricas.
+
 !!! danger "Discussão abortada (2026-08-27) — nenhuma mudança será implementada"
     Após mapear o impacto completo (Fases 1-3, arquivos afetados, riscos de migração), o usuário
     decidiu **não seguir com nenhuma das mudanças propostas neste documento** — o risco de mexer
