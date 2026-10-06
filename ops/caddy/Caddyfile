@@ -1,0 +1,39 @@
+# hook.<BASE_DOMAIN>     -> captain-hook (webhook do GitHub; protegido por HMAC)
+# heimdall.<BASE_DOMAIN> -> SPA do dashboard + proxy same-origin das APIs
+#
+# O dashboard chama pequod, tars-ai e captain-hook pelo MESMO host
+# (/api/pequod, /api/tars, /api/hook). Assim não depende de CORS — o tars-ai tem
+# a lista de origens fixa em localhost no código — e pequod/tars-ai não precisam
+# de hostname público próprio.
+
+hook.{$BASE_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}
+
+heimdall.{$BASE_DOMAIN} {
+	encode zstd gzip
+
+	# Autenticação básica opcional (recomendado: as APIs de pequod/tars-ai não
+	# têm login). Crie ops/caddy/auth.d/basic.caddy com:
+	#   basic_auth {
+	#       admin <saída de: docker run --rm caddy:2 caddy hash-password>
+	#   }
+	import /etc/caddy/auth.d/*.caddy
+
+	handle_path /api/pequod/* {
+		reverse_proxy 127.0.0.1:7070
+	}
+	handle_path /api/tars/* {
+		reverse_proxy 127.0.0.1:6060
+	}
+	handle_path /api/hook/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		root * /srv/heimdall
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,25 @@
+# Override para VPS do compose do captain-hook:
+#  - publica as portas só em 127.0.0.1. O Docker injeta regras de iptables que
+#    PASSAM POR CIMA do ufw: "ports: 9000:9000" expõe o SonarQube na internet
+#    mesmo com firewall ativo.
+#  - restart: unless-stopped, para a infra voltar sozinha após reboot da VPS
+#    (os compose dos repos não definem restart policy).
+# Requer Docker Compose >= 2.24.4 (tag !override).
+#
+#   docker compose -f docker-compose.yml -f <este arquivo> up -d
+services:
+  redpanda:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:9644:9644"
+  redpanda-console:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:8088:8080"
+  sonar-db:
+    restart: unless-stopped
+  sonarqube:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:9000:9000"

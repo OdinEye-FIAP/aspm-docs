@@ -270,3 +270,53 @@ http://localhost:8088 → ver tópicos, mensagens, consumer groups. Útil pra:
 - Conferir se captain-hook publicou
 - Ver payload do JobDescriptor
 - Ver lag por consumer group
+
+## Subida e VPS
+
+### `network aspm-net declared as external, but could not be found`
+
+**Causa:** o compose do pequod usa `aspm-net` como rede `external`; ela só é
+criada pelo compose do captain-hook (ou à mão).
+
+**Fix:** `docker network create aspm-net` ou rode `ops/scripts/infra-up.sh`, que
+cria a rede antes de tudo.
+
+### SonarQube reinicia em loop (`max virtual memory areas vm.max_map_count ... too low`)
+
+**Causa:** o Elasticsearch embutido exige `vm.max_map_count >= 262144`.
+
+**Fix:** `sudo sysctl -w vm.max_map_count=262144` e persistir em
+`/etc/sysctl.d/99-sonarqube.conf` (o `infra-up.sh` faz isso).
+
+### Serviço sobe mas ignora mensagens / `401` entre serviços
+
+**Causa provável:** `KAFKA_MESSAGE_SECRET` ou algum par de `X-Service-Token`
+diferente entre os serviços.
+
+**Diagnóstico:** compare com a tabela de
+[Configuração compartilhada](shared-config.md). Regenerar tudo de forma
+consistente: `bootstrap-env.sh --force` (os segredos já gerados são reaproveitados
+de `.aspm-secrets.env`).
+
+### SonarQube / Postgres / Kafka acessíveis da internet mesmo com `ufw`
+
+**Causa:** o Docker publica portas via iptables, ignorando o `ufw`.
+
+**Fix:** subir a infra com os overrides de VPS (`infra-up.sh --vps`), que publicam
+só em `127.0.0.1`. Confira com `ss -tlnp | grep -E '9000|9092|5433'`.
+
+### Dashboard na VPS: erro de CORS ao chamar o tars-ai
+
+**Causa:** a lista de origens do tars-ai está fixa em `localhost` no código.
+
+**Fix:** servir o dashboard e as APIs pelo mesmo host (Caddyfile em `ops/caddy/`) e
+buildar o dashboard com `build-heimdall.sh`, que aponta `VITE_*_API_URL` para
+`https://heimdall.<BASE_DOMAIN>/api/...`. Lembre que as variáveis `VITE_*` são
+embutidas **no build**: mudar o `.env` sem rebuildar não tem efeito.
+
+### Webhook do GitHub retorna erro de TLS / timeout
+
+**Diagnóstico:** `curl -v https://hook.<BASE_DOMAIN>/health` de fora da VPS;
+`docker logs aspm-caddy`. As causas usuais são DNS ainda não propagado, portas
+80/443 fechadas no firewall (inclusive no painel do provedor) ou `BASE_DOMAIN`
+diferente do usado na URL do webhook.

@@ -27,6 +27,26 @@ mkdocs serve
 
 `mkdocs serve` faz hot reload — editar `.md` recarrega o browser sozinho.
 
+## Subir o ecossistema (ops/)
+
+`ops/` guarda o que é necessário para subir o ASPM-AI inteiro, local ou na VPS:
+
+| Caminho | O que é |
+|---|---|
+| `ops/scripts/infra-up.sh` | rede, Redpanda, SonarQube, Postgres e tópicos Kafka |
+| `ops/scripts/bootstrap-env.sh` | gera segredos compartilhados e os `.env` de cada serviço |
+| `ops/scripts/sonar-bootstrap.sh` | troca a senha do Sonar e gera o `SONAR_TOKEN` |
+| `ops/scripts/build-scanners.sh` | builda as imagens `aspm-*-runner` |
+| `ops/scripts/install-services.sh` | VPS: usuários, `/opt/<svc>`, venv e units systemd |
+| `ops/scripts/build-heimdall.sh` | VPS: build do dashboard apontando para `BASE_DOMAIN` |
+| `ops/scripts/smoke-test.sh` | valida infra, tópicos, imagens e `/health` |
+| `ops/compose/` | overrides de compose para VPS (portas em `127.0.0.1`, restart) |
+| `ops/caddy/` | Caddy (TLS + proxy) parametrizado por `BASE_DOMAIN` |
+| `ops/systemd/` | unit do tars-ai (as demais vivem em cada repo) |
+
+Roteiro completo: `docs/developer/getting-started.md` (local) e
+`docs/developer/deploy-vps.md` (VPS).
+
 ## Deploy
 
 Push em `main` → GitHub Actions buildea e publica em GitHub Pages.
