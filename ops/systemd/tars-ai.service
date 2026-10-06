@@ -1,0 +1,37 @@
+[Unit]
+Description=TARS AI - análise de findings por IA
+Documentation=https://github.com/OdinEye-FIAP/tars-ai
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=tarsai
+Group=tarsai
+WorkingDirectory=/opt/tars-ai
+EnvironmentFile=/etc/tars-ai/env
+Environment=PORT=6060
+ExecStart=/opt/tars-ai/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${PORT}
+
+Restart=on-failure
+RestartSec=5
+
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tars-ai
+
+[Install]
+WantedBy=multi-user.target

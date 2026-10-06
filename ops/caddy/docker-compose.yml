@@ -1,0 +1,24 @@
+# Caddy (TLS automático via Let's Encrypt) na frente do ecossistema.
+# network_mode: host => alcança os serviços em 127.0.0.1:<porta> e escuta 80/443.
+#
+#   cd ops/caddy
+#   echo 'BASE_DOMAIN=aspm.exemplo.com' > .env
+#   docker compose up -d
+services:
+  caddy:
+    image: caddy:2
+    container_name: aspm-caddy
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:?defina BASE_DOMAIN no .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./auth.d:/etc/caddy/auth.d:ro
+      - /srv/heimdall:/srv/heimdall:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

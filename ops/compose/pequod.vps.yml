@@ -1,0 +1,7 @@
+# Override para VPS do compose do pequod: Postgres só em 127.0.0.1 e restart
+# automático. Requer Docker Compose >= 2.24.4 (tag !override).
+services:
+  pequod-db:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:5433:5432"

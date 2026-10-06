@@ -104,6 +104,8 @@ nav:
       - Captain-hook: captain-hook.md
   - Desenvolvedor:
       - Começando: developer/getting-started.md
+      - Deploy na VPS: developer/deploy-vps.md
+      - Configuração compartilhada: developer/shared-config.md
       - Adicionar novo scanner: developer/adding-a-scanner.md
       - GitHub App: developer/github-app-setup.md
       - Troubleshooting: developer/troubleshooting.md
