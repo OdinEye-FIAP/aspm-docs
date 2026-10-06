@@ -164,7 +164,6 @@ CREATE TABLE finding (
     message         text,
     status          text NOT NULL DEFAULT 'open',
     application_id  uuid,
-    tool_id         uuid,
     first_seen_at   timestamptz NOT NULL DEFAULT now(),
     last_seen_at    timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT finding_fingerprint_repo_id_key UNIQUE (fingerprint, repo_id)
