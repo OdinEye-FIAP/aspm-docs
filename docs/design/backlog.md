@@ -186,6 +186,31 @@ para algo relacionado a "risco", pois criaria confusão nova. Escopo:
 `finding_cluster_ai_analysis`), `candidate_clustering_controller.py`,
 `cluster_repository.py`, contratos pequod↔tars-ai↔front.
 
+### #50 — `blocking_items` e `ignored_items` do Quality Gate
+**Repos:** pequod, moby-dick, captain-hook, heimdall-dashboard · **Status:** aguardando revisão, não iniciar sem confirmação
+
+O dashboard deixou de exibir os dois números (card "Bloqueios"/"Ignorados" no
+detalhe do Quality Gate e "N bloqueios"/"N ignorados" na lista da Governança),
+mas os campos continuam nos endpoints e no contrato de propósito, até alguém
+decidir com calma o que fazer com eles. Hoje:
+- `blocking_items` = findings do run **sem** exceção de risco ativa; a decisão
+  do gate é `failed` se houver algum. `ignored_items` = findings cobertos por
+  exceção de risco. Ou seja, "todo finding bloqueia" só vale enquanto não
+  houver exceção ativa.
+- Produzidos em `pequod/model/security_gate_evaluation.py`, gravados no
+  `summary` do run e lidos em `quality_gate_query_repo.py`,
+  `quality_gate_controller.py` e `quality_gates_router.py`.
+- Fazem parte do contrato `quality_gate_v1` (`wire/schemas/quality_gate_v1.py`
+  nos três backends).
+- O moby-dick escreve os dois no texto do check no GitHub ("Itens
+  bloqueantes", "Ignorados por governança") em `quality_gate_check_controller.py`
+  e `baseline_sink_controller.py`.
+- O heimdall-dashboard ainda os declara em `types/governance.ts`.
+
+Perguntas em aberto: as exceções de risco continuam existindo? Se sim,
+`ignored_items` ainda informa algo útil. Se não, o gate pode reprovar qualquer
+finding e os dois campos (e as exceções) saem de ponta a ponta, com um PR por repo.
+
 ## Documentação
 
 ### #43 — Documento de referência do schema do pequod
