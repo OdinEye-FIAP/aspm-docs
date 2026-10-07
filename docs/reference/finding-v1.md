@@ -39,7 +39,7 @@ class Finding(BaseModel):
     |---|---|
     | `code` | `file_path`, `line_start`, `line_end`, `column_start`, `column_end`, `snippet` |
     | `web` | `observed_url`, `endpoint`, `method`, `parameter`, `parameter_location` |
-    | `dependency` | `ecosystem`, `package`, `version`, `manifest_path`, `purl`, `purl_without_version` |
+    | `dependency` | `ecosystem`, `package`, `version`, `file_path`, `purl`, `purl_without_version` |
     | `configuration` | `file_path`, `line_start`/`line_end`, `resource`, `configuration_key` |
     | `asset` | `host`, `port`, `protocol`, `service` |
 
