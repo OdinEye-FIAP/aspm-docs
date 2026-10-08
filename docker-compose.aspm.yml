@@ -1,0 +1,22 @@
+# docker-compose.aspm.yml
+#
+# Gerado automaticamente pelo OdinEye (captain-hook) como ponto de partida
+# para o modo DAST "compose_preview": o OdinEye sobe este compose para
+# obter uma instância efêmera da aplicação e rodar o scan OWASP ZAP contra
+# ela em cada Pull Request.
+#
+# ESTE ARQUIVO É UM SKELETON E NÃO FUNCIONA COMO ESTÁ.
+# TODO: ajuste a imagem/build, a porta e o healthcheck antes de habilitar
+# o scan DAST (ENABLE_ZAP_SCAN=true) para este repositório.
+
+services:
+  web:  # TODO: nome do serviço deve bater com DAST_SERVICE_NAME (default: "web")
+    build: .  # TODO: ajuste o contexto/Dockerfile de build, se necessário
+    ports:
+      - "5000:5000"  # TODO: ajuste para a porta real da aplicação
+    environment: {}  # TODO: variáveis de ambiente mínimas para a app subir
+    healthcheck:
+      test: ["CMD", "true"]  # TODO: comando real de healthcheck
+      interval: 5s
+      timeout: 3s
+      retries: 5
