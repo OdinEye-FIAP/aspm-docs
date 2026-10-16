@@ -65,6 +65,19 @@ endpoint no pequod) ou é só uma seção derivada de dados já existentes
 antes de remover para saber se basta tirar o componente do front ou se também
 há schema/API/contrato a limpar (mesmo padrão dos itens #44/#46/#48).
 
+### #52 — Padronizar os check runs (mesmo padrão dos comentários do PR)
+**Repo:** moby-dick · **Área:** `adapter/sarif_to_check_run.py` · **Tipo:** melhoria
+
+Os comentários de sugestão no PR já seguem um padrão: **inglês** e **enxutos**
+(título, patch e um rodapé `scanner · regra · nível · details`; ver moby-dick#51
+e tars-ai `feat/ai-output-english`). Os **check runs** ainda não: anotações e
+resumo estão em português ("Como corrigir", "Referência:", "Findings sem arquivo
+no repositório") e repetem informação (mensagem completa + remediação). Esperado:
+mesmo idioma, mesmos rótulos e mesmo nível de enxugamento dos comentários
+(ex.: dependência do Trivy como `pacote versão → versão (CVE, severidade)`,
+sem repetir a descrição longa do CVE). Mexe em `sarif_to_check_run.py` e nos
+testes que assertam esses textos.
+
 ## Clustering / consolidated_risk — design maior (#19–#23)
 
 > A maioria destes itens já foi **superada** pela solução determinística
