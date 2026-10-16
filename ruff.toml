@@ -1,0 +1,7 @@
+# Configuração inicial de lint (Ruff) sugerida pelo OdinEye.
+# Ajuste `line-length`, `target-version` e regras conforme o projeto.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I"]
