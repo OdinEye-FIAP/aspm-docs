@@ -210,6 +210,15 @@ repo pode ser renomeado no GitHub depois, e a run antiga deveria manter o
 nome de quando rodou) — avaliar se é desnormalização proposital antes de
 mexer.
 
+**Resolvido (pequod#80 e #81):** não era snapshot útil. O run é "1 linha viva
+por branch" (um commit novo o substitui, sem histórico), e nada lia
+`installation_id`/`source`. As colunas `source`, `repository_id`,
+`repository_full_name` e `installation_id` saíram do run, que guarda só
+`application_id` (NOT NULL); a API lê o nome atual por JOIN. A chave deixou de
+depender do nome: `head_repo` é nulo no próprio repositório (só fork preenche),
+então um rename não duplica o run. Na mesma série, `applications.repository_url`
+saiu (pequod#79): a URL deriva de `repository_full_name`.
+
 ### #48 — Campos decorativos em applications
 **Repo:** pequod
 

@@ -240,7 +240,6 @@ erDiagram
         text repository_full_name
         text name
         text description
-        text repository_url
         text default_branch
         text language
         text business_criticality
@@ -387,10 +386,6 @@ erDiagram
         uuid application_id FK
         text workflow_id
         text delivery_id
-        text source
-        text repository_id
-        text repository_full_name
-        text installation_id
         text kind
         text branch_name
         text head_repo
@@ -658,9 +653,11 @@ Item individual avaliado dentro de um `quality_gate_runs` — aponta para um `fi
 > Nota: `item_type`/campos `cluster_*` aqui referenciam o `finding_cluster` (agrupamento pré-IA), não o `consolidated_risk` — nomenclatura pendente de alinhamento (ver item de backlog sobre renomear `finding_cluster`/`candidate_cluster` no backend).
 
 ### `quality_gate_runs`
-Execução do Quality Gate para um Pull Request (`kind='pr'`, exige `pull_request_number`) **ou** para uma branch fora do contexto de PR (`kind='baseline'`, Security Baseline, sem `pull_request_number`). A chave é UNIQUE por `(repository_id, kind, head_repo, branch_name)`: há 1 run vigente por branch e kind, e um commit novo na mesma branch substitui o run anterior (reset), sem histórico. `head_repo` evita que um PR de fork com head `main` colida com o baseline da branch padrão. A decisão do gate fica no próprio run (`decision`, `summary`, `policy_*`); não existe tabela de avaliação separada.
+Execução do Quality Gate para um Pull Request (`kind='pr'`, exige `pull_request_number`) **ou** para uma branch fora do contexto de PR (`kind='baseline'`, Security Baseline, sem `pull_request_number`). A chave é um unique index por `(application_id, kind, COALESCE(head_repo, ''), branch_name)`: há 1 run vigente por branch e kind, e um commit novo na mesma branch substitui o run anterior (reset), sem histórico. `head_repo` só é preenchido em PR de fork (nulo = o próprio repositório), o que evita que um PR de fork com head `main` colida com o baseline da branch padrão e torna a chave imune a rename do repositório. A decisão do gate fica no próprio run (`decision`, `summary`, `policy_*`); não existe tabela de avaliação separada.
 
-Colunas: `application_id`, `workflow_id` (UNIQUE), `delivery_id`, `source` (default `github`), `repository_id`/`repository_full_name`, `installation_id`, `kind` (`pr`/`baseline`), `branch_name`, `head_repo`, `pull_request_number`, `base_ref`, `head_sha`, `expected_scanners` (jsonb array), `status` (`pending`→`running`→`evaluating`→`completed`/`failed`/`cancelled`/`timed_out`), `decision` (`passed`/`warning`/`failed`/`error`), `summary` (jsonb), `policy_id`/`policy_name`/`policy_version`/`policy_mode`, `started_at`/`expires_at`/`completed_at`.
+A identidade do repositório (id externo, nome, provider, instalação) vive só em `applications`; o run guarda apenas `application_id` (NOT NULL), e a API devolve `repository_full_name` por JOIN. `delivery_id` é UNIQUE por `(delivery_id, application_id)`.
+
+Colunas: `application_id`, `workflow_id` (UNIQUE), `delivery_id`, `kind` (`pr`/`baseline`), `branch_name`, `head_repo`, `pull_request_number`, `base_ref`, `head_sha`, `expected_scanners` (jsonb array), `status` (`pending`→`running`→`evaluating`→`completed`/`failed`/`cancelled`/`timed_out`), `decision` (`passed`/`warning`/`failed`/`error`), `summary` (jsonb), `policy_id`/`policy_name`/`policy_version`/`policy_mode`, `started_at`/`expires_at`/`completed_at`.
 
 Os scanners do run são as linhas de `scans` com `quality_gate_run_id` preenchido; não há tabela `quality_gate_scanner_runs`.
 
